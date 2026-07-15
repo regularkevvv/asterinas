@@ -107,6 +107,7 @@ die_exception_level:
     # Enable MMU and cache.
     mov     x4, #(SCTLR_I | SCTLR_C | SCTLR_M)
     msr     sctlr_el1, x4
+    isb
 
     # Update SP/PC to use the virtual address.
     ldr     x4, =(boot_stack_top + KERNEL_VMA)
