@@ -39,6 +39,7 @@ use crate::{
 };
 
 const OVERLAY_FS_MAGIC: u64 = 0x794C7630;
+const COPY_UP_CHUNK_SIZE: usize = 64 * 1024;
 
 /// An `OverlayFs` is a union pseudo file system employed to merge
 /// upper and lower directories that potentially comes from different
@@ -492,7 +493,7 @@ impl OverlayInode {
     pub fn page_cache(&self) -> Option<PageCache> {
         let _ = self.get_top_valid_inode().page_cache()?;
         // Do copy-up for the potential memory mapping operations
-        let upper = self.build_upper_recursively_if_needed().unwrap();
+        let upper = self.build_upper_recursively_if_needed().ok()?;
         upper.page_cache()
     }
 
@@ -529,17 +530,58 @@ impl OverlayInode {
 
     pub fn rename(
         &self,
-        _old_name: &str,
-        _target: &Arc<dyn Inode>,
-        _new_name: &str,
-        _mode: RenameMode,
+        old_name: &str,
+        target: &Arc<dyn Inode>,
+        new_name: &str,
+        mode: RenameMode,
     ) -> Result<()> {
-        // TODO: Support the rename operation based on the `redirect_mode` feature,
-        // rename the upper only may unexpectedly reveal the lower inodes.
-        return_errno_with_message!(
-            Errno::EOPNOTSUPP,
-            "rename is not supported in current overlayfs"
-        );
+        let target = target
+            .downcast_ref::<OverlayInode>()
+            .ok_or_else(|| Error::with_message(Errno::EXDEV, "not same fs"))?;
+
+        // Full overlayfs rename needs redirect-dir and whiteout handling. The
+        // upper-only, same-directory case does not: moving a file that has no
+        // lower counterpart cannot reveal anything at the old name. This is
+        // also the atomic replace pattern used by userspace file installers.
+        if !core::ptr::eq(self, target) || mode == RenameMode::Exchange {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "overlayfs rename is limited to upper-only files in one directory"
+            );
+        }
+
+        let source = self.lookup(old_name)?;
+        let source = source.downcast_ref::<OverlayInode>().unwrap();
+        if source.type_ == InodeType::Dir || !source.has_valid_upper() || source.has_valid_lower() {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "overlayfs rename source is not an upper-only non-directory"
+            );
+        }
+
+        let destination = match self.lookup(new_name) {
+            Ok(inode) => Some(inode),
+            Err(error) if error.error() == Errno::ENOENT => None,
+            Err(error) => return Err(error),
+        };
+        if mode == RenameMode::NoReplace && destination.is_some() {
+            return_errno!(Errno::EEXIST);
+        }
+        if destination
+            .as_ref()
+            .is_some_and(|inode| inode.type_() == InodeType::Dir)
+        {
+            return_errno!(Errno::EISDIR);
+        }
+
+        let upper = self.build_upper_recursively_if_needed()?;
+        if upper.lookup(&whiteout_name(new_name)).is_ok() {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "overlayfs rename destination has a whiteout"
+            );
+        }
+        upper.rename(old_name, &upper, new_name, mode)
     }
 
     pub fn sync_all(&self) -> Result<()> {
@@ -868,27 +910,38 @@ impl OverlayInode {
             return Ok(());
         }
 
-        // TODO: Find a way to cut this copy, like just copy chunks of data from two page caches directly.
         let lower_size = lower.size();
-        let data_buf = FrameAllocOptions::new()
-            .zeroed(false)
-            .alloc_segment(lower_size.align_up(BLOCK_SIZE) / BLOCK_SIZE)?;
+        let mut offset = 0;
+        while offset < lower_size {
+            let chunk_len = (lower_size - offset).min(COPY_UP_CHUNK_SIZE);
+            let data_buf = FrameAllocOptions::new()
+                .zeroed(false)
+                .alloc_segment(chunk_len.align_up(BLOCK_SIZE) / BLOCK_SIZE)?;
 
-        let mut writer = data_buf.writer().to_fallible();
-        let read_len = lower.read_at(0, &mut writer, StatusFlags::empty())?;
+            let mut writer = data_buf.writer().to_fallible();
+            let read_len =
+                lower.read_at(offset, &mut writer.limit(chunk_len), StatusFlags::empty())?;
+            if read_len == 0 {
+                return_errno_with_message!(Errno::EIO, "short read while copying up file");
+            }
 
-        let mut reader = data_buf.reader().to_fallible();
-        let _ = upper.write_at(0, reader.limit(read_len), StatusFlags::empty())?;
+            let mut reader = data_buf.reader().to_fallible();
+            let write_len = upper.write_at(offset, reader.limit(read_len), StatusFlags::empty())?;
+            if write_len != read_len {
+                return_errno_with_message!(Errno::EIO, "short write while copying up file");
+            }
+            offset += read_len;
+        }
         Ok(())
     }
 
     fn copy_up_xattr(lower: &Arc<dyn Inode>, upper: &Arc<dyn Inode>) -> Result<()> {
         debug_assert!(lower.type_() == upper.type_());
 
-        let list_len = lower.list_xattr(
+        let list_len = xattr_list_len_or_empty(lower.list_xattr(
             XattrNamespace::Trusted,
             &mut VmWriter::from([].as_mut_slice()).to_fallible(),
-        )?;
+        ))?;
         if list_len == 0 {
             return Ok(());
         }
@@ -920,6 +973,14 @@ impl OverlayInode {
             )?;
         }
         Ok(())
+    }
+}
+
+fn xattr_list_len_or_empty(result: Result<usize>) -> Result<usize> {
+    match result {
+        Ok(len) => Ok(len),
+        Err(error) if error.error() == Errno::EOPNOTSUPP => Ok(0),
+        Err(error) => Err(error),
     }
 }
 
@@ -1443,6 +1504,36 @@ mod tests {
     }
 
     #[ktest]
+    fn rename_upper_only_file_in_same_directory() {
+        let fs = create_overlay_fs();
+        let root = fs.root_inode();
+
+        root.create("upload.tmp", InodeType::File, InodeMode::all())
+            .unwrap();
+        root.rename("upload.tmp", &root, "upload", RenameMode::Replace)
+            .unwrap();
+
+        assert_eq!(
+            root.lookup("upload.tmp").unwrap_err().error(),
+            Errno::ENOENT
+        );
+        assert_eq!(root.lookup("upload").unwrap().type_(), InodeType::File);
+    }
+
+    #[ktest]
+    fn rename_lower_file_remains_unsupported() {
+        let fs = create_overlay_fs();
+        let root = fs.root_inode();
+
+        let error = root
+            .rename("f1", &root, "renamed", RenameMode::Replace)
+            .unwrap_err();
+
+        assert_eq!(error.error(), Errno::EOPNOTSUPP);
+        assert_eq!(root.lookup("f1").unwrap().type_(), InodeType::File);
+    }
+
+    #[ktest]
     fn whiteout_file() {
         let fs = create_overlay_fs();
         let root = fs.root_inode();
@@ -1498,6 +1589,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(xattr_value.as_slice(), "f2_xattr_value".as_bytes());
+    }
+
+    #[ktest]
+    fn copy_up_large_file_in_bounded_chunks() {
+        crate::time::clocks::init_for_ktest();
+        crate::fs::vfs::init();
+
+        let upper = Path::new_fs_root(new_dummy_mount());
+        let lower = Path::new_fs_root(new_dummy_mount());
+        let lower_file = lower
+            .new_fs_child("large", InodeType::File, InodeMode::all())
+            .unwrap();
+        let data: Vec<u8> = (0..COPY_UP_CHUNK_SIZE * 2 + 123)
+            .map(|offset| offset as u8)
+            .collect();
+        lower_file.inode().write_bytes_at(0, &data).unwrap();
+
+        let fs = OverlayFs::new(upper.clone(), vec![lower], upper).unwrap();
+        let root = fs.root_inode();
+        let file = root.lookup("large").unwrap();
+        file.write_bytes_at(data.len() - 1, &[0xff]).unwrap();
+
+        let mut copied = vec![0u8; data.len()];
+        file.read_bytes_at(0, &mut copied).unwrap();
+        let mut expected = data;
+        *expected.last_mut().unwrap() = 0xff;
+        assert_eq!(copied, expected);
+    }
+
+    #[ktest]
+    fn copy_up_treats_unsupported_lower_xattrs_as_empty() {
+        let unsupported = Error::with_message(Errno::EOPNOTSUPP, "xattrs unsupported");
+        assert_eq!(xattr_list_len_or_empty(Err(unsupported)).unwrap(), 0);
+
+        let io_error = Error::with_message(Errno::EIO, "xattr I/O error");
+        assert_eq!(
+            xattr_list_len_or_empty(Err(io_error)).unwrap_err().error(),
+            Errno::EIO
+        );
     }
 
     #[ktest]
