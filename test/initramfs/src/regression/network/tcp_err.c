@@ -229,6 +229,24 @@ FN_TEST(bind)
 }
 END_TEST()
 
+FN_TEST(bind_wildcard_ipv4)
+{
+	int sk = TEST_SUCC(socket(PF_INET, SOCK_STREAM, 0));
+	struct sockaddr_in addr = {
+		.sin_family = AF_INET,
+		.sin_port = 0,
+		.sin_addr.s_addr = htonl(INADDR_ANY),
+	};
+	socklen_t addrlen = sizeof(addr);
+
+	TEST_SUCC(bind(sk, (struct sockaddr *)&addr, sizeof(addr)));
+	TEST_SUCC(listen(sk, 1));
+	TEST_RES(getsockname(sk, (struct sockaddr *)&addr, &addrlen),
+		 addrlen == sizeof(addr) && addr.sin_port != 0);
+	TEST_SUCC(close(sk));
+}
+END_TEST()
+
 FN_TEST(bind_reuseaddr)
 {
 	sk_addr.sin_port = htons(8081);

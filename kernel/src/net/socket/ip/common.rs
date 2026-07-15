@@ -3,7 +3,7 @@
 use aster_bigtcp::{
     errors::BindError,
     iface::BindPortConfig,
-    wire::{IpAddress, IpEndpoint},
+    wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv6Address},
 };
 
 use crate::{
@@ -23,6 +23,16 @@ fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
             .find(|iface| iface.ipv6_addr().is_some_and(|addr| addr == ipv6_addr))
             .map(Clone::clone),
     }
+}
+
+fn is_unspecified(ip_addr: &IpAddress) -> bool {
+    matches!(
+        *ip_addr,
+        IpAddress::Ipv4(addr) if addr == Ipv4Address::UNSPECIFIED
+    ) || matches!(
+        *ip_addr,
+        IpAddress::Ipv6(addr) if addr == Ipv6Address::UNSPECIFIED
+    )
 }
 
 /// Get a suitable iface to deal with sendto/connect request if the socket is not bound to an iface.
@@ -75,17 +85,34 @@ pub(super) fn resolve_bind_iface_and_config(
 ) -> Result<(Arc<Iface>, BindPortConfig)> {
     check_port_privilege(endpoint.port)?;
 
-    let iface = match get_iface_to_bind(&endpoint.addr) {
-        Some(iface) => iface,
-        None => {
-            return_errno_with_message!(
-                Errno::EADDRNOTAVAIL,
-                "the address is not available from the local machine"
-            );
+    // BigTCP currently binds a socket to one concrete interface. Treat Linux's
+    // wildcard addresses as selecting the default interface for that address
+    // family, and materialize the interface address internally so outbound
+    // packets never carry an unspecified source address.
+    let (iface, bind_endpoint) = if is_unspecified(&endpoint.addr) {
+        let iface = get_ephemeral_iface(&endpoint.addr);
+        let bind_addr = match endpoint.addr {
+            IpAddress::Ipv4(_) => iface.ipv4_addr().map(IpAddress::Ipv4),
+            IpAddress::Ipv6(_) => iface.ipv6_addr().map(IpAddress::Ipv6),
         }
+        .ok_or_else(|| {
+            Error::with_message(
+                Errno::EADDRNOTAVAIL,
+                "no interface has an address for the specified family",
+            )
+        })?;
+        (iface, IpEndpoint::new(bind_addr, endpoint.port))
+    } else {
+        let iface = get_iface_to_bind(&endpoint.addr).ok_or_else(|| {
+            Error::with_message(
+                Errno::EADDRNOTAVAIL,
+                "the address is not available from the local machine",
+            )
+        })?;
+        (iface, *endpoint)
     };
 
-    let bind_port_config = BindPortConfig::new(*endpoint, can_reuse);
+    let bind_port_config = BindPortConfig::new(bind_endpoint, can_reuse);
 
     Ok((iface, bind_port_config))
 }
