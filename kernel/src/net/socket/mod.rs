@@ -25,6 +25,7 @@ pub mod vsock;
 mod private {
     use core::time::Duration;
 
+    use super::util::SendRecvFlags;
     use crate::{events::IoEvents, prelude::*, process::signal::Pollable};
 
     /// Common methods for sockets, but private to the network module.
@@ -65,6 +66,28 @@ mod private {
                         }
                         _ => err,
                     })
+            }
+        }
+
+        /// Completes a socket I/O operation without waiting when the caller
+        /// supplied `MSG_DONTWAIT`, even if the file description itself is in
+        /// blocking mode.
+        #[track_caller]
+        fn block_on_with_flags<F, R>(
+            &self,
+            events: IoEvents,
+            timeout: Option<Duration>,
+            flags: SendRecvFlags,
+            mut try_op: F,
+        ) -> Result<R>
+        where
+            Self: Sized,
+            F: FnMut() -> Result<R>,
+        {
+            if flags.contains(SendRecvFlags::MSG_DONTWAIT) {
+                try_op()
+            } else {
+                self.block_on(events, timeout, try_op)
             }
         }
     }
