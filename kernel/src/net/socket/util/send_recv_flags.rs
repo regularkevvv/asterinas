@@ -39,7 +39,7 @@ bitflags! {
 
 impl SendRecvFlags {
     fn supported_flags() -> Self {
-        SendRecvFlags::MSG_PEEK
+        SendRecvFlags::MSG_PEEK | SendRecvFlags::MSG_DONTWAIT
     }
 
     pub fn is_all_supported(&self) -> bool {
@@ -54,5 +54,17 @@ impl SendRecvFlags {
         } else {
             ReceiveBehavior::Recv
         }
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use super::*;
+
+    #[ktest]
+    fn peek_and_dontwait_are_supported_receive_flags() {
+        let flags = SendRecvFlags::MSG_PEEK | SendRecvFlags::MSG_DONTWAIT;
+        assert!(flags.is_all_supported());
+        assert_eq!(flags.receive_behavior(), ReceiveBehavior::Peek);
     }
 }

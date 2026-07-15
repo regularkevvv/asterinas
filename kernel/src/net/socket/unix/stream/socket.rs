@@ -520,7 +520,7 @@ impl Socket for UnixStreamSocket {
         }
         let mut auxiliary_data = AuxiliaryData::from_control(control_messages)?;
 
-        self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
+        self.block_on_with_flags(IoEvents::OUT, self.timeouts.send_timeout(), flags, || {
             self.try_send(reader, &mut auxiliary_data, flags)
         })
     }
@@ -536,7 +536,7 @@ impl Socket for UnixStreamSocket {
         }
 
         let (received_bytes, control_messages) =
-            self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
+            self.block_on_with_flags(IoEvents::IN, self.timeouts.recv_timeout(), flags, || {
                 self.try_recv(writer, flags)
             })?;
 

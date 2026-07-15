@@ -190,7 +190,7 @@ where
         flags: SendRecvFlags,
     ) -> Result<(usize, MessageHeader)> {
         let (received_len, addr) =
-            self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
+            self.block_on_with_flags(IoEvents::IN, self.timeouts.recv_timeout(), flags, || {
                 self.try_recv(writer, flags)
             })?;
 

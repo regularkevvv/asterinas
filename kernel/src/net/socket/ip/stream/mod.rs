@@ -610,7 +610,7 @@ impl Socket for StreamSocket {
             warn!("sending control message is not supported");
         }
 
-        self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
+        self.block_on_with_flags(IoEvents::OUT, self.timeouts.send_timeout(), flags, || {
             self.try_send(reader, flags)
         })
 
@@ -628,7 +628,7 @@ impl Socket for StreamSocket {
         }
 
         let (received_bytes, _) =
-            self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
+            self.block_on_with_flags(IoEvents::IN, self.timeouts.recv_timeout(), flags, || {
                 self.try_recv(writer, flags)
             })?;
 
