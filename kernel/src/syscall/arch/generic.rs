@@ -22,7 +22,7 @@ macro_rules! import_generic_syscall_entries {
             chown::{sys_fchown, sys_fchownat},
             chroot::sys_chroot,
             clock_gettime::sys_clock_gettime,
-            clone::{sys_clone, sys_clone3},
+            clone::{sys_clone_generic_arch, sys_clone3},
             close::{sys_close, sys_close_range},
             connect::sys_connect,
             dup::{sys_dup, sys_dup3},
@@ -380,7 +380,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_BRK = 214                    => sys_brk(args[..1]);
             SYS_MUNMAP = 215                 => sys_munmap(args[..2]);
             SYS_MREMAP = 216                 => sys_mremap(args[..5]);
-            SYS_CLONE = 220                  => sys_clone(args[..5], &user_ctx);
+            SYS_CLONE = 220                  => sys_clone_generic_arch(args[..5], &user_ctx);
             SYS_EXECVE = 221                 => sys_execve(args[..3], &mut user_ctx);
             SYS_MMAP = 222                   => sys_mmap(args[..6]);
             SYS_FADVISE64 = 223              => sys_fadvise64(args[..4]);

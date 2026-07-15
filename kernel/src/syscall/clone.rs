@@ -29,6 +29,36 @@ pub fn sys_clone(
     Ok(SyscallReturn::Return(child_pid as _))
 }
 
+/// Handles `clone(2)` on architectures that use Linux's `CONFIG_CLONE_BACKWARDS` ABI.
+///
+/// AArch64 and RISC-V pass the TLS pointer before the child TID pointer, unlike
+/// x86-64 and LoongArch. Keep the common implementation in [`sys_clone`] and
+/// reorder the two architecture-specific arguments here.
+pub fn sys_clone_backwards(
+    clone_flags: u64,
+    new_sp: u64,
+    parent_tidptr: Vaddr,
+    tls: u64,
+    child_tidptr: Vaddr,
+    ctx: &Context,
+    parent_context: &UserContext,
+) -> Result<SyscallReturn> {
+    sys_clone(
+        clone_flags,
+        new_sp,
+        parent_tidptr,
+        child_tidptr,
+        tls,
+        ctx,
+        parent_context,
+    )
+}
+
+#[cfg(target_arch = "loongarch64")]
+pub use sys_clone as sys_clone_generic_arch;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub use sys_clone_backwards as sys_clone_generic_arch;
+
 pub fn sys_clone3(
     clong_args_addr: Vaddr,
     size: usize,
