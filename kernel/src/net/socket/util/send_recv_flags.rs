@@ -59,6 +59,8 @@ impl SendRecvFlags {
 
 #[cfg(ktest)]
 mod tests {
+    use ostd::prelude::ktest;
+
     use super::*;
 
     #[ktest]
