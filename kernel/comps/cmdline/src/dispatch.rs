@@ -91,13 +91,25 @@ fn init() -> Result<(), ComponentInitError> {
 fn split_arg(input: &str) -> impl Iterator<Item = &str> {
     let mut inside_quotes = false;
 
-    input.split(move |c: char| {
-        if c == '"' {
-            inside_quotes = !inside_quotes;
-        }
+    input
+        .split(move |c: char| {
+            if c == '"' {
+                inside_quotes = !inside_quotes;
+            }
 
-        !inside_quotes && c.is_whitespace()
-    })
+            !inside_quotes && c.is_whitespace()
+        })
+        .filter(|arg| !arg.is_empty())
+}
+
+// Linux's `next_arg` removes surrounding double quotes after using them to
+// protect whitespace. Match that behavior for both whole tokens (`"A=B"`) and
+// values (`A="B C"`). An unmatched opening quote is also omitted, as on Linux.
+fn strip_double_quotes(input: &str) -> &str {
+    let Some(unquoted) = input.strip_prefix('"') else {
+        return input;
+    };
+    unquoted.strip_suffix('"').unwrap_or(unquoted)
 }
 
 fn dispatch_params(cmdline: &str) -> InitprocArgs {
@@ -121,7 +133,9 @@ fn dispatch_params(cmdline: &str) -> InitprocArgs {
 
     // Step 2: Tokenize the kernel command line and group recognized param by normalized name.
     let mut grouped: BTreeMap<String, (Vec<Option<&str>>, usize)> = BTreeMap::new();
-    for (pos, arg) in split_arg(cmdline).enumerate() {
+    for (pos, raw_arg) in split_arg(cmdline).enumerate() {
+        let arg = strip_double_quotes(raw_arg);
+
         // Everything after "--" goes to init.
         if kcmdline_end {
             result.argv.push(CString::new(arg).unwrap());
@@ -133,7 +147,7 @@ fn dispatch_params(cmdline: &str) -> InitprocArgs {
         }
 
         let (key, value) = match arg.find('=') {
-            Some(pos) => (&arg[..pos], Some(&arg[pos + 1..])),
+            Some(pos) => (&arg[..pos], Some(strip_double_quotes(&arg[pos + 1..]))),
             None => (arg, None),
         };
         // Normalize hyphens to underscores (Linux compatibility)
@@ -203,6 +217,28 @@ mod tests {
     fn unknown_kv_forwarded_to_init_env() {
         let args = dispatch_params("unknown_key=1");
         assert!(args.envp().iter().any(|e| e.to_bytes() == b"unknown_key=1"));
+    }
+
+    #[ktest]
+    fn quoted_unknown_kv_forwarded_without_quotes() {
+        let args =
+            dispatch_params(r#""SMOLVM_READY_MARKER=.smolvm-ready.vm1" MESSAGE="hello world""#);
+
+        assert_eq!(args.envp.len(), 2);
+        assert_eq!(
+            args.envp[0].to_bytes(),
+            b"SMOLVM_READY_MARKER=.smolvm-ready.vm1"
+        );
+        assert_eq!(args.envp[1].to_bytes(), b"MESSAGE=hello world");
+    }
+
+    #[ktest]
+    fn quoted_init_args_forwarded_without_quotes() {
+        let args = dispatch_params(r#"--   "/sbin/init"    "hello world""#);
+
+        assert_eq!(args.argv.len(), 2);
+        assert_eq!(args.argv[0].to_bytes(), b"/sbin/init");
+        assert_eq!(args.argv[1].to_bytes(), b"hello world");
     }
 
     #[ktest]
