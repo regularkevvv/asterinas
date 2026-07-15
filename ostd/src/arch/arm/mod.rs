@@ -104,11 +104,23 @@ pub(crate) fn enable_cpu_features() {
     // Architectural Feature Access Control Register (CPACR).
     // FPEN, bits [21:20] = 11: Instructions that use the registers associated
     // with Advanced SIMD and floating-point execution can be used at EL0/EL1.
+    //
+    // CNTKCTL_EL1.EL0VCTEN, bit [1] = 1: CNTVCT_EL0 can be read at EL0. The
+    // AArch64 vDSO reads the virtual counter directly when its clock mode is
+    // enabled. Keep all other timer access controls unchanged.
     unsafe {
         asm!(
             "mov {tmp}, #(3 << 20)",
             "msr cpacr_el1, {tmp}",
             tmp = out(reg) _,
+        );
+        asm!(
+            "mrs {tmp}, cntkctl_el1",
+            "orr {tmp}, {tmp}, #2",
+            "msr cntkctl_el1, {tmp}",
+            "isb",
+            tmp = out(reg) _,
+            options(nomem, nostack, preserves_flags),
         );
     }
 }
