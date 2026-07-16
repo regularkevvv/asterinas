@@ -28,6 +28,16 @@ pub(in crate::arch) fn init(io_mem_allocator_builder: &mut IoMemAllocatorBuilder
     IRQ_CHIP.call_once(|| IrqChip { gic });
 }
 
+/// Initializes the CPU-local GICv3 state on an application processor.
+///
+/// # Safety
+///
+/// This function must be called exactly once on each AP after [`init`] has completed on the BSP.
+pub(in crate::arch) unsafe fn init_on_ap() {
+    // SAFETY: The caller upholds the per-CPU initialization requirements.
+    unsafe { IRQ_CHIP.get().unwrap().gic.init_on_ap() };
+}
+
 /// An IRQ chip.
 ///
 /// This abstracts the hardware IRQ chips (or IRQ controllers), allowing the bus
@@ -43,6 +53,14 @@ pub struct IrqChip {
 }
 
 impl IrqChip {
+    pub(super) fn map_ipi_to(&self, irq_line: IrqLine) -> Result<MappedIrqLine> {
+        let interrupt_source_on_chip = self.gic.map_ipi_to(&irq_line)?;
+        Ok(MappedIrqLine {
+            irq_line,
+            interrupt_source_on_chip,
+        })
+    }
+
     /// Maps an IRQ pin specified by `interrupt_source_in_fdt` to an IRQ line.
     pub fn map_fdt_pin_to(
         &self,

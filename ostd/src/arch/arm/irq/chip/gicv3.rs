@@ -4,7 +4,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{
     arch::asm,
     ops::Range,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
 use fdt::Fdt;
@@ -23,11 +23,12 @@ pub(super) struct Gic {
     phandle: u32,
     inner: SpinLock<Inner, LocalIrqDisabled>,
     interrupt_number_mappings: Box<[AtomicU8]>,
+    private_edge_triggers: AtomicU32,
 }
 
 struct Inner {
     distributor: Distributor,
-    redistributor: Redistributor,
+    redistributors: Redistributors,
 }
 
 impl Gic {
@@ -53,52 +54,39 @@ impl Gic {
                 .size
                 .expect("Incomplete 'reg' property found in GIC node");
 
-            io_mem_allocator_builder.reserve(addr..addr + size, crate::mm::CachePolicy::Uncacheable)
+            (
+                io_mem_allocator_builder
+                    .reserve(addr..addr + size, crate::mm::CachePolicy::Uncacheable),
+                size,
+            )
         };
 
         let mut distributor = {
-            let io_mem = next_reg();
+            let (io_mem, _) = next_reg();
             Distributor(DistributorBase {
                 offset: Distributor::BASE_OFFSET,
                 io_mem,
             })
         };
-        let mut redistributor = {
-            let io_mem = next_reg();
-            Redistributor(DistributorBase {
-                offset: Redistributor::BASE_OFFSET,
+        let redistributors = {
+            let (io_mem, size) = next_reg();
+            let stride = node
+                .property("redistributor-stride")
+                .and_then(|property| property.as_usize());
+            Redistributors {
                 io_mem,
-            })
+                size,
+                stride,
+            }
         };
 
         distributor.init();
-        redistributor.init();
-
-        unsafe {
-            asm!(
-                "mrs {tmp}, icc_sre_el1",
-                "orr {tmp}, {tmp}, #1", // SRE
-                "msr icc_sre_el1, {tmp}",
-
-                "mov {tmp}, #0xff", // Lowest priority
-                "msr icc_pmr_el1, {tmp}",
-                "mov {tmp}, #7", // No preemption
-                "msr icc_bpr1_el1, {tmp}",
-
-                "mrs {tmp}, icc_ctlr_el1",
-                "and {tmp}, {tmp}, #~2", // EOI deactivates the interrupt
-                "msr icc_ctlr_el1, {tmp}",
-
-                "mov {tmp}, #1", // Enable
-                "msr icc_igrpen1_el1, {tmp}",
-
-                tmp = out(reg) _
-            );
-        }
+        redistributors.init_current();
+        init_cpu_interface();
 
         let inner = Inner {
             distributor,
-            redistributor,
+            redistributors,
         };
         let mappings = (0..inner.distributor.get_interrupt_count())
             .map(|_| AtomicU8::new(0xFF))
@@ -108,7 +96,31 @@ impl Gic {
             phandle,
             inner: SpinLock::new(inner),
             interrupt_number_mappings: mappings,
+            private_edge_triggers: AtomicU32::new(0),
         })
+    }
+
+    /// Initializes the GIC state that is private to the current AP.
+    ///
+    /// # Safety
+    ///
+    /// This must be called exactly once on each AP after the BSP has initialized the GIC.
+    pub(super) unsafe fn init_on_ap(&self) {
+        let inner = self.inner.lock();
+        inner.redistributors.init_current();
+
+        for intid in 0..Distributor::BASE_SPI {
+            if self.interrupt_number_mappings[intid as usize].load(Ordering::Acquire)
+                != IRQ_NUM_INVALID
+            {
+                let edge_triggers = self.private_edge_triggers.load(Ordering::Relaxed);
+                inner
+                    .redistributors
+                    .configure_current(intid, edge_triggers & (1 << intid) != 0);
+            }
+        }
+
+        init_cpu_interface();
     }
 
     pub(super) fn map_interrupt_source_to(
@@ -163,7 +175,6 @@ impl Gic {
         {
             return Err(Error::AccessDenied);
         }
-        self.interrupt_number_mappings[intid as usize].store(irq_line.num(), Ordering::Relaxed);
 
         if is_spi {
             inner.distributor.set_priority(intid, 0x80);
@@ -171,16 +182,44 @@ impl Gic {
             inner.distributor.set_edge_or_level(intid, is_edge);
             inner.distributor.set_enabled(intid, true);
         } else {
-            inner.redistributor.set_priority(intid, 0x80);
-            inner.redistributor.set_group1(intid);
-            inner.redistributor.set_edge_or_level(intid, is_edge);
-            inner.redistributor.set_enabled(intid, true);
+            self.set_private_edge_trigger(intid, is_edge);
+            inner.redistributors.configure_current(intid, is_edge);
         }
+        self.interrupt_number_mappings[intid as usize].store(irq_line.num(), Ordering::Release);
 
         Ok(InterruptSourceOnChip {
             interrupt_parent: self.phandle,
             interrupt: intid,
         })
+    }
+
+    pub(super) fn map_ipi_to(&self, irq_line: &IrqLine) -> Result<InterruptSourceOnChip> {
+        let intid = u32::from(super::super::ipi::IPI_SGI_ID);
+        let inner = self.inner.lock();
+
+        if self.interrupt_number_mappings[intid as usize].load(Ordering::Relaxed) != IRQ_NUM_INVALID
+        {
+            return Err(Error::AccessDenied);
+        }
+
+        self.set_private_edge_trigger(intid, true);
+        inner.redistributors.configure_current(intid, true);
+        self.interrupt_number_mappings[intid as usize].store(irq_line.num(), Ordering::Release);
+
+        Ok(InterruptSourceOnChip {
+            interrupt_parent: self.phandle,
+            interrupt: intid,
+        })
+    }
+
+    fn set_private_edge_trigger(&self, intid: u32, is_edge: bool) {
+        let bit = 1u32 << intid;
+        if is_edge {
+            self.private_edge_triggers.fetch_or(bit, Ordering::Relaxed);
+        } else {
+            self.private_edge_triggers
+                .fetch_and(!bit, Ordering::Relaxed);
+        }
     }
 
     pub(super) fn unmap_interrupt_source(&self, interrupt_source: InterruptSourceOnChip) {
@@ -192,10 +231,10 @@ impl Gic {
         if intid >= Distributor::BASE_SPI {
             inner.distributor.set_enabled(intid, false);
         } else {
-            inner.redistributor.set_enabled(intid, false);
+            inner.redistributors.set_current_enabled(intid, false);
         };
 
-        self.interrupt_number_mappings[intid as usize].store(0xFF, Ordering::Relaxed);
+        self.interrupt_number_mappings[intid as usize].store(IRQ_NUM_INVALID, Ordering::Release);
     }
 
     pub(super) fn claim_interrupt(&self) -> Option<HwIrqLine> {
@@ -208,7 +247,7 @@ impl Gic {
             return None;
         }
 
-        let irq_num = self.interrupt_number_mappings[iar1].load(Ordering::Relaxed);
+        let irq_num = self.interrupt_number_mappings[iar1].load(Ordering::Acquire);
         Some(HwIrqLine {
             irq_num,
             source: InterruptSourceOnChip {
@@ -222,6 +261,34 @@ impl Gic {
         assert_eq!(interrupt_source.interrupt_parent, self.phandle);
 
         unsafe { asm!("msr icc_eoir1_el1, {}", in(reg) interrupt_source.interrupt as u64) }
+    }
+}
+
+fn init_cpu_interface() {
+    // SAFETY: These system registers are the GICv3 CPU interface for the current processor. This
+    // function is called once per processor before local interrupts are enabled.
+    unsafe {
+        asm!(
+            "mrs {tmp}, icc_sre_el1",
+            "orr {tmp}, {tmp}, #1", // Enable the system-register interface.
+            "msr icc_sre_el1, {tmp}",
+            "isb",
+
+            "mov {tmp}, #0xff", // Accept every interrupt priority.
+            "msr icc_pmr_el1, {tmp}",
+            "mov {tmp}, #7", // Disable priority preemption.
+            "msr icc_bpr1_el1, {tmp}",
+
+            "mrs {tmp}, icc_ctlr_el1",
+            "and {tmp}, {tmp}, #~2", // EOIR also deactivates the interrupt.
+            "msr icc_ctlr_el1, {tmp}",
+
+            "mov {tmp}, #1",
+            "msr icc_igrpen1_el1, {tmp}",
+            "isb",
+            tmp = out(reg) _,
+            options(nostack),
+        );
     }
 }
 
@@ -347,6 +414,81 @@ impl Distributor {
         // SAFETY: We've checked that the interrupt ID is valid.
         unsafe { self.0.set_enabled(intid, is_enabled) };
     }
+}
+
+struct Redistributors {
+    io_mem: IoMem<Sensitive>,
+    size: usize,
+    stride: Option<usize>,
+}
+
+impl Redistributors {
+    const FRAME_SIZE: usize = 128 * 1024;
+    const FRAME_SIZE_WITH_VLPIS: usize = 256 * 1024;
+    const GICR_TYPER: usize = 0x0008;
+    const GICR_TYPER_VLPIS: u64 = 1 << 1;
+    const GICR_TYPER_LAST: u64 = 1 << 4;
+
+    fn init_current(&self) {
+        self.current().init();
+    }
+
+    fn configure_current(&self, intid: u32, is_edge: bool) {
+        let mut redistributor = self.current();
+        redistributor.set_priority(intid, 0x80);
+        redistributor.set_group1(intid);
+        if intid >= Redistributor::BASE_PPI {
+            redistributor.set_edge_or_level(intid, is_edge);
+        }
+        redistributor.set_enabled(intid, true);
+    }
+
+    fn set_current_enabled(&self, intid: u32, is_enabled: bool) {
+        self.current().set_enabled(intid, is_enabled);
+    }
+
+    fn current(&self) -> Redistributor {
+        let target_affinity = compact_mpidr_affinity(crate::arch::boot::smp::current_hw_cpu_id());
+        let mut offset = 0usize;
+
+        while offset
+            .checked_add(Self::FRAME_SIZE)
+            .is_some_and(|end| end <= self.size)
+        {
+            let frame = self.io_mem.slice(offset..offset + Self::FRAME_SIZE);
+            // SAFETY: GICR_TYPER is a read-only 64-bit register in every redistributor frame.
+            let typer = unsafe { frame.read_once::<u64>(Self::GICR_TYPER) };
+            if (typer >> 32) as u32 == target_affinity {
+                return Redistributor(DistributorBase {
+                    offset: Redistributor::BASE_OFFSET,
+                    io_mem: frame,
+                });
+            }
+
+            if typer & Self::GICR_TYPER_LAST != 0 {
+                break;
+            }
+            let default_stride = if typer & Self::GICR_TYPER_VLPIS != 0 {
+                Self::FRAME_SIZE_WITH_VLPIS
+            } else {
+                Self::FRAME_SIZE
+            };
+            let stride = self.stride.unwrap_or(default_stride);
+            assert!(stride >= Self::FRAME_SIZE);
+            offset = offset
+                .checked_add(stride)
+                .expect("GIC redistributor offset overflow");
+        }
+
+        panic!(
+            "No GIC redistributor found for MPIDR affinity {:#x}",
+            target_affinity
+        );
+    }
+}
+
+const fn compact_mpidr_affinity(mpidr: u64) -> u32 {
+    (((mpidr >> 8) & 0xff00_0000) | (mpidr & 0x00ff_ffff)) as u32
 }
 
 struct Redistributor(DistributorBase);

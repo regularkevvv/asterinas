@@ -2,6 +2,7 @@
 , benchmark, conformance, regression, dnsServer, }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
+  smp_test = builtins.path { path = ./../src/smp_test.sh; };
   init = builtins.path { path = ./../src/init; };
   etc = lib.fileset.toSource {
     root = ./../etc;
@@ -39,6 +40,7 @@ in stdenvNoCC.mkDerivation {
     ''}
 
     cp ${boot_hello} $out/test/boot_hello.sh
+    cp ${smp_test} $out/test/smp_test.sh
     cp ${init} $out/init
 
     cp -r ${etc}/* $out/etc/
