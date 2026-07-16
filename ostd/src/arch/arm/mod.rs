@@ -12,6 +12,7 @@ pub(crate) mod iommu;
 pub mod irq;
 pub(crate) mod mm;
 mod power;
+mod psci;
 pub mod serial;
 pub(crate) mod task;
 mod timer;
@@ -40,9 +41,13 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // after the kernel page table is activated.
     let mut io_mem_builder = unsafe { io::construct_io_mem_allocator_builder() };
 
-    irq::chip::init(&mut io_mem_builder);
+    psci::init();
+    power::init();
 
-    timer::init();
+    irq::chip::init(&mut io_mem_builder);
+    irq::ipi::init_on_bsp();
+
+    timer::init_on_bsp();
 
     // SAFETY: We're on the BSP and we're ready to boot all APs.
     unsafe { crate::boot::smp::boot_all_aps() };
@@ -51,14 +56,12 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // 1. All the system device memory have been removed from the builder.
     // 2. ARM platforms do not have port I/O.
     unsafe { crate::io::init(io_mem_builder) };
-
-    power::init();
 }
 
 /// Initializes application-processor-specific state.
 ///
-/// On RISC-V, Application Processors (APs) are harts that are not the
-/// bootstrapping hart.
+/// On AArch64, Application Processors (APs) are CPUs other than the
+/// bootstrapping processor.
 ///
 /// # Safety
 ///
@@ -67,7 +70,10 @@ pub(crate) unsafe fn late_init_on_bsp() {
 ///    and before any other architecture-specific code in this module is called
 ///    on this AP.
 pub(crate) unsafe fn init_on_ap() {
-    unimplemented!()
+    // SAFETY: The caller guarantees that this runs once on the AP after BSP initialization.
+    unsafe { irq::chip::init_on_ap() };
+    irq::ipi::init_on_ap();
+    timer::init_on_ap();
 }
 
 /// Returns the frequency of TSC. The unit is Hz.
