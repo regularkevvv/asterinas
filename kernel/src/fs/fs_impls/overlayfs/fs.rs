@@ -204,7 +204,7 @@ impl FileSystem for OverlayFs {
         // writes may belong to any copied-up descendant. This is also needed
         // when the upper mount is hidden below a pivoted overlay root and the
         // caller can only reach this synthetic filesystem through `sync(2)`.
-        self.upper.path.fs().sync()
+        self.upper.path.mount_node().fs().sync()
     }
 
     fn sb(&self) -> SuperBlock {

@@ -255,7 +255,7 @@ impl PageCache {
         Ok(())
     }
 
-    /// Flushes dirty pages in the specified range to the backend storage.
+    /// Flushes committed pages in the specified range to backend storage.
     ///
     /// This walks the current cache contents, submits writeback for pages that
     /// are dirty when this pass reaches them, and waits for the submitted I/O
@@ -275,7 +275,7 @@ impl PageCache {
             return Ok(());
         };
 
-        vmo.flush_dirty_pages(&range)
+        vmo.flush_committed_pages(&range)
     }
 
     /// Evicts clean pages within the specified range from the page cache.
@@ -304,7 +304,7 @@ impl PageCache {
         vmo.evict_up_to_date_pages(&range)
     }
 
-    /// Flushes dirty pages and then evicts clean pages in the specified range.
+    /// Flushes committed pages and then evicts clean pages in the specified range.
     ///
     /// This is the standard preparation step before issuing direct I/O that must
     /// bypass the page cache. It uses the same locking requirements as
@@ -314,7 +314,7 @@ impl PageCache {
             return Ok(());
         };
 
-        vmo.flush_dirty_pages(&range)?;
+        vmo.flush_committed_pages(&range)?;
         vmo.evict_up_to_date_pages(&range)
     }
 

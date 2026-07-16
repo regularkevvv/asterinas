@@ -19,6 +19,30 @@ fn new_backend_page_cache(backend: &Arc<MockPageCacheBackend>, num_pages: usize)
     PageCache::new_with_backend(num_pages * PAGE_SIZE, Arc::downgrade(&backend_dyn)).unwrap()
 }
 
+/// A shared writable mapping mutates the cache frame without going through the
+/// buffered-I/O path that marks `CachePageMeta` dirty. `sync(2)` must still
+/// persist that initialized page until hardware PTE dirty bits are harvested.
+#[ktest]
+fn flush_persists_mmap_style_clean_page_mutation() {
+    let backend = MockPageCacheBackend::new(1);
+    let old_pattern = vec![0x21; PAGE_SIZE];
+    let mapped_pattern = vec![0xa7; PAGE_SIZE];
+    backend.set_persisted_page_bytes(0, &old_pattern);
+
+    let page_cache = new_backend_page_cache(&backend, 1);
+    let page = page_cache.as_vmo().commit_on(0).unwrap();
+    assert_eq!(backend.read_count(0), 1);
+
+    // Direct frame mutation models a writable shared PTE: the cache page stays
+    // UpToDate because this path cannot currently propagate the hardware dirty
+    // bit back into the VMO metadata.
+    page.write_bytes(0, &mapped_pattern).unwrap();
+    page_cache.flush_range(0..PAGE_SIZE).unwrap();
+
+    assert_eq!(backend.write_count(0), 1);
+    assert_eq!(backend.persisted_page_bytes(0), mapped_pattern);
+}
+
 /// Serializes a cold read and a later overwrite with the caller-provided
 /// buffered-I/O lock required by the page-cache synchronization model.
 #[ktest]
