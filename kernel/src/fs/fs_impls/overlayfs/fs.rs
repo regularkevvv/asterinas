@@ -198,8 +198,13 @@ impl FileSystem for OverlayFs {
     }
 
     fn sync(&self) -> Result<()> {
-        // TODO: Issue sync to all upper inodes.
-        Ok(())
+        // The overlay does not own a separate data store: every dirty page and
+        // metadata update lives in the writable upper filesystem. Forward a
+        // filesystem-wide sync instead of only syncing the upper root inode;
+        // writes may belong to any copied-up descendant. This is also needed
+        // when the upper mount is hidden below a pivoted overlay root and the
+        // caller can only reach this synthetic filesystem through `sync(2)`.
+        self.upper.path.fs().sync()
     }
 
     fn sb(&self) -> SuperBlock {
@@ -1318,6 +1323,8 @@ impl FsType for OverlayFsType {
 // TODO: Enrich the tests to cover more cases.
 #[cfg(ktest)]
 mod tests {
+    use core::sync::atomic::AtomicUsize;
+
     use ostd::{mm::VmIo, prelude::ktest};
 
     use super::*;
@@ -1332,6 +1339,49 @@ mod tests {
             Arc::downgrade(MountNamespace::get_init_singleton()),
         )
         .unwrap()
+    }
+
+    struct SyncCountingFs {
+        inner: Arc<RamFs>,
+        sync_count: AtomicUsize,
+        fs_event_subscriber_stats: FsEventSubscriberStats,
+    }
+
+    impl SyncCountingFs {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: RamFs::new(),
+                sync_count: AtomicUsize::new(0),
+                fs_event_subscriber_stats: FsEventSubscriberStats::new(),
+            })
+        }
+    }
+
+    impl FileSystem for SyncCountingFs {
+        fn name(&self) -> &'static str {
+            "sync-counting"
+        }
+
+        fn sync(&self) -> Result<()> {
+            self.sync_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn root_inode(&self) -> Arc<dyn Inode> {
+            self.inner.root_inode()
+        }
+
+        fn sb(&self) -> SuperBlock {
+            self.inner.sb()
+        }
+
+        fn fs_event_subscriber_stats(&self) -> &FsEventSubscriberStats {
+            &self.fs_event_subscriber_stats
+        }
+    }
+
+    fn new_sync_counting_mount(fs: Arc<SyncCountingFs>) -> Arc<Mount> {
+        Mount::new_root(fs, Arc::downgrade(MountNamespace::get_init_singleton())).unwrap()
     }
 
     fn create_overlay_fs() -> Arc<dyn FileSystem> {
@@ -1551,6 +1601,21 @@ mod tests {
         let mut payload = [0u8; 7];
         target.read_bytes_at(0, &mut payload).unwrap();
         assert_eq!(&payload, b"payload");
+    }
+
+    #[ktest]
+    fn sync_reaches_writable_backing_filesystem() {
+        crate::time::clocks::init_for_ktest();
+        crate::fs::vfs::init();
+
+        let upper_fs = SyncCountingFs::new();
+        let upper = Path::new_fs_root(new_sync_counting_mount(upper_fs.clone()));
+        let lower = Path::new_fs_root(new_dummy_mount());
+        let fs = OverlayFs::new(upper.clone(), vec![lower], upper).unwrap();
+
+        fs.sync().unwrap();
+
+        assert_eq!(upper_fs.sync_count.load(Ordering::Relaxed), 1);
     }
 
     #[ktest]
