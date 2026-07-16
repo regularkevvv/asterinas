@@ -110,3 +110,44 @@ pub(super) fn init() {
         IpiSender { hw_cpu_ids }
     });
 }
+
+#[cfg(ktest)]
+mod test {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::{
+        cpu::{CpuId, CpuSet, num_cpus},
+        prelude::ktest,
+        util::id_set::Id,
+    };
+
+    static VISITED_CPUS: AtomicUsize = AtomicUsize::new(0);
+
+    fn mark_current_cpu() {
+        let cpu_id = CpuId::current_racy().as_usize();
+        VISITED_CPUS.fetch_or(1 << cpu_id, Ordering::Release);
+    }
+
+    #[ktest]
+    fn inter_processor_call_reaches_every_cpu() {
+        let cpu_count = num_cpus();
+        assert!(cpu_count <= usize::BITS as usize);
+
+        VISITED_CPUS.store(0, Ordering::Relaxed);
+        super::inter_processor_call(&CpuSet::new_full(), mark_current_cpu);
+
+        let expected = if cpu_count == usize::BITS as usize {
+            usize::MAX
+        } else {
+            (1 << cpu_count) - 1
+        };
+        let start = crate::arch::read_tsc();
+        while VISITED_CPUS.load(Ordering::Acquire) != expected
+            && crate::arch::read_tsc().wrapping_sub(start) < crate::arch::tsc_freq()
+        {
+            core::hint::spin_loop();
+        }
+
+        assert_eq!(VISITED_CPUS.load(Ordering::Acquire), expected);
+    }
+}

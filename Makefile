@@ -124,6 +124,8 @@ CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
+else ifeq ($(AUTO_TEST), smp)
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/smp_test.sh $(SMP)"
 else ifeq ($(AUTO_TEST), vsock)
 ENABLE_REGRESSION_TEST := true
 export VSOCK=on
@@ -284,6 +286,9 @@ else ifeq ($(AUTO_TEST), regression)
 else ifeq ($(AUTO_TEST), boot)
 	@tail --lines 100 qemu.log | grep -q "^Successfully booted." \
 		|| (echo "Boot test failed" && exit 1)
+else ifeq ($(AUTO_TEST), smp)
+	@tail --lines 100 qemu.log | grep -q "^SMP test passed with $(SMP) processors." \
+		|| (echo "SMP test failed" && exit 1)
 else ifeq ($(AUTO_TEST), vsock)
 	@tail --lines 100 qemu.log | grep -q "^Vsock test passed." \
 		|| (echo "Vsock test failed" && exit 1)

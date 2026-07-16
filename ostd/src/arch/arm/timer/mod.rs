@@ -29,7 +29,7 @@ cpu_local_cell! {
     static COUNTER_VAL: usize = 0;
 }
 
-pub(super) fn init() {
+pub(super) fn init_on_bsp() {
     if let Err(err) = init_impl() {
         crate::error!("Failed to initialize timer, error: {:?}", err);
     }
@@ -97,6 +97,19 @@ fn init_impl() -> Result<(), InitError> {
     TIMER_IRQ.call_once(|| mapped_irq_line);
 
     COUNTER_STEP.store((tsc_freq() / TIMER_FREQ) as usize, Ordering::Relaxed);
+    start_on_current_cpu();
+
+    Ok(())
+}
+
+/// Initializes the architectural virtual timer on an application processor.
+pub(super) fn init_on_ap() {
+    assert!(TIMER_IRQ.is_completed());
+    assert_ne!(COUNTER_STEP.load(Ordering::Relaxed), 0);
+    start_on_current_cpu();
+}
+
+fn start_on_current_cpu() {
     COUNTER_VAL.store(read_tsc() as usize);
 
     // SAFETY: It is safe to enable timer interrupts.
@@ -111,8 +124,6 @@ fn init_impl() -> Result<(), InitError> {
     }
 
     set_next_timer();
-
-    Ok(())
 }
 
 fn timer_callback(trapframe: &TrapFrame) {
