@@ -229,16 +229,25 @@ impl<D: TtyDriver> Tty<D> {
 
         dispatch_ioctl!(match raw_ioctl {
             cmd @ GetTermios => {
-                let ldisc = self.ldisc.lock();
-                let termios = ldisc.termios();
+                // `cmd.write` copies into userspace and can fault (for example,
+                // when a forked PTY client first writes to a COW page). Do not
+                // retain the IRQ-disabling line-discipline lock across it.
+                let termios = {
+                    let ldisc = self.ldisc.lock();
+                    *ldisc.termios()
+                };
 
-                cmd.write(termios)?;
+                cmd.write(&termios)?;
             }
             cmd @ GetTermios2 => {
-                let ldisc = self.ldisc.lock();
-                let termios = ldisc.termios();
+                // See `GetTermios`: this user copy must occur after the
+                // IRQ-disabling line-discipline lock has been released.
+                let termios = {
+                    let ldisc = self.ldisc.lock();
+                    *ldisc.termios()
+                };
 
-                cmd.write(termios)?;
+                cmd.write(&termios)?;
             }
             cmd @ SetTermios => {
                 let termios = cmd.read()?;
