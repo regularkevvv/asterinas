@@ -111,6 +111,17 @@ pub(crate) fn enable_cpu_features() {
     // FPEN, bits [21:20] = 11: Instructions that use the registers associated
     // with Advanced SIMD and floating-point execution can be used at EL0/EL1.
     //
+    // SCTLR_EL1.DZE/UCT/UCI let EL0 use the architectural cache-discovery and
+    // cache-maintenance instructions expected by Linux AArch64 runtimes:
+    //
+    // - DZE, bit [14]: `DC ZVA`;
+    // - UCT, bit [15]: reads of `CTR_EL0`; and
+    // - UCI, bit [26]: cache maintenance by virtual address (`DC CVAU`,
+    //   `IC IVAU`, and related instructions).
+    //
+    // JIT runtimes use CTR_EL0 plus DC CVAU/IC IVAU to publish generated code;
+    // trapping these otherwise surfaces as SIGILL in ordinary Linux binaries.
+    //
     // CNTKCTL_EL1.EL0VCTEN, bit [1] = 1: CNTVCT_EL0 can be read at EL0. The
     // AArch64 vDSO reads the virtual counter directly when its clock mode is
     // enabled. Keep all other timer access controls unchanged.
@@ -119,6 +130,15 @@ pub(crate) fn enable_cpu_features() {
             "mov {tmp}, #(3 << 20)",
             "msr cpacr_el1, {tmp}",
             tmp = out(reg) _,
+        );
+        asm!(
+            "mrs {tmp}, sctlr_el1",
+            "orr {tmp}, {tmp}, #0xc000",
+            "orr {tmp}, {tmp}, #(1 << 26)",
+            "msr sctlr_el1, {tmp}",
+            "isb",
+            tmp = out(reg) _,
+            options(nomem, nostack, preserves_flags),
         );
         asm!(
             "mrs {tmp}, cntkctl_el1",
