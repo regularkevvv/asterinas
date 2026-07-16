@@ -14,8 +14,7 @@ static volatile sig_atomic_t delivered_signo;
 static volatile sig_atomic_t delivered_code;
 static volatile sig_atomic_t delivered_value;
 
-static long rt_tgsigqueueinfo(pid_t tgid, pid_t tid, int sig,
-			      siginfo_t *info)
+static long rt_tgsigqueueinfo(pid_t tgid, pid_t tid, int sig, siginfo_t *info)
 {
 	return syscall(SYS_rt_tgsigqueueinfo, tgid, tid, sig, info);
 }
@@ -60,18 +59,15 @@ FN_TEST(rt_tgsigqueueinfo_errnos)
 	init_siginfo(&info, SIGUSR1, SI_QUEUE);
 	TEST_ERRNO(rt_tgsigqueueinfo(0, tid, SIGUSR1, &info), EINVAL);
 	TEST_ERRNO(rt_tgsigqueueinfo(tgid, 0, SIGUSR1, &info), EINVAL);
-	TEST_ERRNO(rt_tgsigqueueinfo(tgid + 1, tid, SIGUSR1, &info),
-		   ESRCH);
-	TEST_ERRNO(rt_tgsigqueueinfo(tgid, tid, SIGUSR1,
-					 (siginfo_t *)1),
+	TEST_ERRNO(rt_tgsigqueueinfo(tgid + 1, tid, SIGUSR1, &info), ESRCH);
+	TEST_ERRNO(rt_tgsigqueueinfo(tgid, tid, SIGUSR1, (siginfo_t *)1),
 		   EFAULT);
 
 	init_siginfo(&info, 65, SI_QUEUE);
 	TEST_ERRNO(rt_tgsigqueueinfo(tgid, tid, 65, &info), EINVAL);
 
 	init_siginfo(&info, SIGUSR1, SI_KERNEL);
-	TEST_ERRNO(rt_tgsigqueueinfo(tgid, tid + 1, SIGUSR1, &info),
-		   EPERM);
+	TEST_ERRNO(rt_tgsigqueueinfo(tgid, tid + 1, SIGUSR1, &info), EPERM);
 }
 END_TEST()
 
