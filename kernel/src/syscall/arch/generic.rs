@@ -112,6 +112,7 @@ macro_rules! import_generic_syscall_entries {
             rt_sigreturn::sys_rt_sigreturn,
             rt_sigsuspend::sys_rt_sigsuspend,
             rt_sigtimedwait::sys_rt_sigtimedwait,
+            rt_tgsigqueueinfo::sys_rt_tgsigqueueinfo,
             sched_affinity::{sys_sched_getaffinity, sys_sched_setaffinity},
             sched_get_priority_max::sys_sched_get_priority_max,
             sched_get_priority_min::sys_sched_get_priority_min,
@@ -322,6 +323,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_RT_SIGPENDING = 136          => sys_rt_sigpending(args[..2]);
             SYS_RT_SIGTIMEDWAIT = 137        => sys_rt_sigtimedwait(args[..4]);
             SYS_RT_SIGRETURN = 139           => sys_rt_sigreturn(args[..0], &mut user_ctx);
+            SYS_RT_TGSIGQUEUEINFO = 240       => sys_rt_tgsigqueueinfo(args[..4]);
             SYS_SET_PRIORITY = 140           => sys_set_priority(args[..3]);
             SYS_GET_PRIORITY = 141           => sys_get_priority(args[..2]);
             SYS_REBOOT = 142                 => sys_reboot(args[..4]);
