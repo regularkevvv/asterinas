@@ -115,6 +115,7 @@ use super::{
     rt_sigreturn::sys_rt_sigreturn,
     rt_sigsuspend::sys_rt_sigsuspend,
     rt_sigtimedwait::sys_rt_sigtimedwait,
+    rt_tgsigqueueinfo::sys_rt_tgsigqueueinfo,
     sched_affinity::{sys_sched_getaffinity, sys_sched_setaffinity},
     sched_get_priority_max::sys_sched_get_priority_max,
     sched_get_priority_min::sys_sched_get_priority_min,
@@ -403,6 +404,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_INOTIFY_INIT1 = 294     => sys_inotify_init1(args[..1]);
     SYS_PREADV = 295           => sys_preadv(args[..5]);
     SYS_PWRITEV = 296          => sys_pwritev(args[..5]);
+    SYS_RT_TGSIGQUEUEINFO = 297 => sys_rt_tgsigqueueinfo(args[..4]);
     SYS_PRLIMIT64 = 302        => sys_prlimit64(args[..4]);
     SYS_SYNCFS = 306           => sys_syncfs(args[..1]);
     SYS_SENDMMSG = 307         => sys_sendmmsg(args[..4]);
