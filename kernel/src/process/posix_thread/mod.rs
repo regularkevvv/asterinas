@@ -272,17 +272,20 @@ impl PosixThread {
     /// Waking `signalled_waker` is sufficient for an interruptible sleep, but
     /// it cannot wake a thread that is actively running on another CPU. A
     /// user-mode task observes pending signals only after an interrupt, syscall,
-    /// or exception returns control to the kernel. Send a no-op IPI to its
-    /// last-known CPU so a CPU-bound target gets that boundary as well.
+    /// or exception returns control to the kernel. The scheduler's CPU field is
+    /// advisory and may be stale while the task is in flight, so send a no-op
+    /// IPI to every CPU rather than risking an IPI to the task's previous CPU.
+    /// The callback is intentionally empty: its interrupt return gives the
+    /// running target the kernel-event boundary where it can consume the signal.
     fn kick_running_task_for_signal_delivery(&self) {
         let Some(task) = self.task.upgrade() else {
             return;
         };
-        let Some(cpu) = task.schedule_info().cpu.get() else {
+        if task.schedule_info().cpu.get().is_none() {
             return;
-        };
+        }
 
-        ostd::smp::inter_processor_call(&CpuSet::from(cpu), || {});
+        ostd::smp::inter_processor_call(&CpuSet::new_full(), || {});
     }
 
     pub fn register_signalfd_poller(&self, poller: &mut PollHandle, mask: IoEvents) {
