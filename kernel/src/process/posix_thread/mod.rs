@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use aster_rights::{ReadDupOp, ReadOp, ReadWriteOp};
 use ostd::{
+    cpu::CpuSet,
     sync::{RoArc, RwMutexReadGuard, Waker},
     task::Task,
 };
@@ -262,6 +263,26 @@ impl PosixThread {
     pub fn enqueue_signal(&self, signal: Box<dyn Signal>) {
         self.sig_queues.enqueue(signal);
         self.wake_signalled_waker();
+        self.kick_running_task_for_signal_delivery();
+    }
+
+    /// Forces a task which is currently executing in user mode to reach its
+    /// kernel-event check after a thread-directed signal is queued.
+    ///
+    /// Waking `signalled_waker` is sufficient for an interruptible sleep, but
+    /// it cannot wake a thread that is actively running on another CPU. A
+    /// user-mode task observes pending signals only after an interrupt, syscall,
+    /// or exception returns control to the kernel. Send a no-op IPI to its
+    /// last-known CPU so a CPU-bound target gets that boundary as well.
+    fn kick_running_task_for_signal_delivery(&self) {
+        let Some(task) = self.task.upgrade() else {
+            return;
+        };
+        let Some(cpu) = task.schedule_info().cpu.get() else {
+            return;
+        };
+
+        ostd::smp::inter_processor_call(&CpuSet::from(cpu), || {});
     }
 
     pub fn register_signalfd_poller(&self, poller: &mut PollHandle, mask: IoEvents) {
