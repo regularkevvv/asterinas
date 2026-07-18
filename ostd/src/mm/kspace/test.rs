@@ -8,7 +8,7 @@ use crate::{
             LINEAR_MAPPING_BASE_VADDR, MappedItemRef, VMALLOC_VADDR_RANGE, kvirt_area::KVirtArea,
             paddr_to_vaddr,
         },
-        page_prop::{CachePolicy, PageFlags, PageProperty},
+        page_prop::{CachePolicy, PageFlags, PageProperty, effective_page_property},
     },
     prelude::*,
     task::disable_preempt,
@@ -40,7 +40,7 @@ fn kvirt_area_tracked_map_pages() {
             panic!("Expected a tracked page");
         };
         assert_eq!(page.paddr(), paddr + (i * PAGE_SIZE));
-        assert_eq!(prop.flags, default_prop().flags);
+        assert_eq!(prop.flags, effective_page_property(default_prop()).flags);
         assert_eq!(prop.cache, default_prop().cache);
     }
 }
@@ -70,7 +70,7 @@ fn kvirt_area_untracked_map_pages() {
         };
         assert_eq!(pa, pa_range.start + (i * PAGE_SIZE) as Paddr);
         assert_eq!(level, 1);
-        assert_eq!(prop, default_prop());
+        assert_eq!(prop, effective_page_property(default_prop()));
     }
 }
 
