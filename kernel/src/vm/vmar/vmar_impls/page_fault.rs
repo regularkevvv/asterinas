@@ -5,7 +5,16 @@ use crate::{prelude::*, vm::perms::VmPerms};
 
 impl Vmar {
     pub fn handle_page_fault(&self, page_fault_info: &PageFaultInfo) -> Result<()> {
-        let inner = self.inner.read();
+        // Kernel accesses to userspace can fault while RCU or another
+        // preemption guard is held. A contended sleeping read would try to
+        // reschedule from atomic mode and panic, so retain the existing
+        // sleeping behavior for ordinary faults and use the explicitly
+        // non-sleeping acquisition only for atomic-mode faults.
+        let inner = if ostd::task::atomic_mode::is_atomic() {
+            self.inner.spin_read()
+        } else {
+            self.inner.read()
+        };
 
         let address = page_fault_info.address;
         if let Some(vm_mapping) = inner.vm_mappings.find_one(&address) {

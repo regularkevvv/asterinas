@@ -29,6 +29,14 @@
 
 use core::sync::atomic::Ordering;
 
+/// Returns whether the current CPU is executing in atomic mode.
+///
+/// Code in atomic mode must not block or switch tasks. It may still use
+/// explicitly non-sleeping synchronization primitives.
+pub fn is_atomic() -> bool {
+    super::preempt::cpu_local::get_guard_count() != 0 || !crate::arch::irq::is_local_enabled()
+}
+
 /// Marks a function as one that might sleep.
 ///
 /// This function will panic if it is executed in atomic mode.
