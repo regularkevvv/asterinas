@@ -127,6 +127,8 @@ echo "All mount bind file test passed."
 
 ./overlayfs/ovl_test
 ./overlayfs/readdir_small_buffer
+./overlayfs/readdir_large_directory
+./overlayfs/unlinkat_remove_all
 
 ./procfs/dentry_cache
 ./procfs/fd

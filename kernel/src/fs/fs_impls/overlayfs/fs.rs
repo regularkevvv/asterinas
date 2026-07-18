@@ -346,32 +346,37 @@ impl OverlayInode {
             return_errno!(Errno::ENOTDIR);
         }
 
-        let overlay_dir_visitor = self.readdir_inner(offset)?;
+        // Lower filesystems use different cursor representations: RamFS uses
+        // entry indices while ext2 uses the byte offset after the entry.
+        // Forwarding a lower offset through the merged view and adding one
+        // skips an ext2 entry at a getdents buffer boundary.
+        //
+        // Build the merged view from the beginning and expose stable ordinal
+        // offsets for the overlay inode itself. This keeps resumed getdents
+        // independent of the private cursor convention of a lower filesystem.
+        let overlay_dir_visitor = self.readdir_inner(0)?;
 
-        let mut last_visited_offset: Option<usize> = None;
-        for (entry_offset, (name, ino, type_)) in overlay_dir_visitor.as_merged_view() {
-            if let Err(e) = visitor.visit(name, *ino, *type_, *entry_offset) {
+        let mut visited = 0usize;
+        for (entry_index, (_, (name, ino, type_))) in overlay_dir_visitor
+            .as_merged_view()
+            .enumerate()
+            .skip(offset)
+        {
+            let resume_offset = entry_index
+                .checked_add(1)
+                .ok_or(Error::new(Errno::EOVERFLOW))?;
+            if let Err(e) = visitor.visit(name, *ino, *type_, resume_offset) {
                 // If nothing has been visited yet, propagate the error.
                 // Otherwise, stop early and return what we have so far.
-                if last_visited_offset.is_none() {
+                if visited == 0 {
                     return Err(e);
                 }
                 break;
             }
-            last_visited_offset = Some(*entry_offset);
+            visited += 1;
         }
 
-        // Return the offset increment that advances the caller from the starting `offset`
-        // to one past the last visited dirent offset. Note: this is not guaranteed to be
-        // equal to the number of entries visited, since offsets may encode layer bits.
-        if let Some(last_off) = last_visited_offset {
-            last_off
-                .checked_sub(offset)
-                .and_then(|v| v.checked_add(1))
-                .ok_or(Error::new(Errno::EOVERFLOW))
-        } else {
-            Ok(0)
-        }
+        Ok(visited)
     }
 
     /// Deletes the target file by creating a "whiteout" file from the upper layer.
