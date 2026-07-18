@@ -130,6 +130,20 @@ impl<T: ?Sized> RwMutex<T> {
         self.queue.wait_until(|| self.try_read())
     }
 
+    /// Acquires a read mutex by spinning until it can be acquired.
+    ///
+    /// Unlike [`Self::read`], this method never sleeps and can therefore be
+    /// used in atomic mode. Callers must ensure that spinning cannot create a
+    /// lock-ordering cycle with the current atomic-mode guards.
+    pub fn spin_read(&self) -> RwMutexReadGuard<'_, T> {
+        loop {
+            if let Some(guard) = self.try_read() {
+                return guard;
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     /// Acquires a write mutex and sleep until it can be acquired.
     ///
     /// The calling thread will sleep until there are no writers, upreaders,
@@ -374,5 +388,18 @@ impl<T: ?Sized> Drop for RwMutexUpgradeableGuard<'_, T> {
         if res == UPGRADEABLE_READER {
             self.inner.queue.wake_all();
         }
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use super::*;
+    use crate::prelude::*;
+
+    #[ktest]
+    fn spin_read_acquires_uncontended_mutex() {
+        let mutex = RwMutex::new(42);
+        let guard = mutex.spin_read();
+        assert_eq!(*guard, 42);
     }
 }
