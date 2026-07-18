@@ -27,6 +27,17 @@ impl PageProperty {
     }
 }
 
+/// Returns the page property observable after installing a mapping in tests.
+#[cfg(ktest)]
+pub(crate) fn effective_page_property(mut property: PageProperty) -> PageProperty {
+    // AArch64 requires the Access Flag to be set because OSTD does not handle
+    // Access Flag faults yet.
+    #[cfg(target_arch = "aarch64")]
+    property.flags.insert(PageFlags::ACCESSED);
+
+    property
+}
+
 // TODO: Make it more abstract when supporting other architectures.
 /// A type to control the cacheability of the main memory.
 ///
