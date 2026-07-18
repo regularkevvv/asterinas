@@ -9,6 +9,7 @@ use crate::{
         CachePolicy, FallibleVmRead, FallibleVmWrite, FrameAllocOptions, PageFlags, PageProperty,
         UFrame, VmSpace,
         io::{VmIo, VmIoFill, VmReader, VmWriter, util::HasVmReaderWriter},
+        page_prop::effective_page_property,
         tlb::TlbFlushOp,
         vm_space::{VmQueriedItem, get_activated_vm_space},
     },
@@ -493,17 +494,22 @@ mod vmspace {
 
     macro_rules! assert_matches_mapped {
         ($cursor:expr, $range:expr, $frame:expr, $prop:expr) => {
-            assert!(matches!(
-                $cursor.query().unwrap(),
-                (
-                    __range__,
-                    Some(VmQueriedItem::MappedRam {
-                        frame: __frame__,
-                        prop: __prop__,
-                        ..
-                    })
-                ) if __range__ == $range && __frame__.paddr() == $frame.paddr() && __prop__ == $prop
-            ));
+            {
+                let expected_prop = effective_page_property($prop);
+                assert!(matches!(
+                    $cursor.query().unwrap(),
+                    (
+                        __range__,
+                        Some(VmQueriedItem::MappedRam {
+                            frame: __frame__,
+                            prop: __prop__,
+                            ..
+                        })
+                    ) if __range__ == $range
+                        && __frame__.paddr() == $frame.paddr()
+                        && __prop__ == expected_prop
+                ));
+            }
         };
     }
 
@@ -929,12 +935,15 @@ mod vmspace {
             assert_eq!(cursor.virt_addr(), range.start);
             let (query_range, query_item) = cursor.query().unwrap();
             assert_eq!(query_range, range);
+            let effective_prop = effective_page_property(prop);
 
             // The query result should be `VmQueriedItem::MappedIoMem`.
             assert!(matches!(
                 query_item,
                 Some(VmQueriedItem::MappedIoMem { paddr, prop: query_prop })
-                if paddr == IOMEM_PADDR && query_prop.flags == prop.flags && query_prop.cache == prop.cache
+                if paddr == IOMEM_PADDR
+                    && query_prop.flags == effective_prop.flags
+                    && query_prop.cache == effective_prop.cache
             ));
         }
 
@@ -987,12 +996,15 @@ mod vmspace {
                 .expect("failed to create the cursor");
             let (query_range, query_item) = cursor.query().unwrap();
             assert_eq!(query_range, range);
+            let effective_prop = effective_page_property(prop);
 
             // The query result should be `VmQueriedItem::MappedIoMem`.
             assert!(matches!(
                 query_item,
                 Some(VmQueriedItem::MappedIoMem { paddr, prop: query_prop })
-                if paddr == IOMEM_PADDR + 0x2000 && query_prop.flags == prop.flags && query_prop.cache == prop.cache
+                if paddr == IOMEM_PADDR + 0x2000
+                    && query_prop.flags == effective_prop.flags
+                    && query_prop.cache == effective_prop.cache
             ));
         }
 

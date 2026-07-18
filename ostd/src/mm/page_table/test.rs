@@ -8,7 +8,7 @@ use crate::{
     mm::{
         FrameAllocOptions, MAX_USERSPACE_VADDR, PAGE_SIZE,
         kspace::{KernelPtConfig, LINEAR_MAPPING_BASE_VADDR},
-        page_prop::{CachePolicy, PageFlags},
+        page_prop::{CachePolicy, PageFlags, effective_page_property},
         vm_space::VmItem,
     },
     prelude::*,
@@ -423,6 +423,7 @@ mod page_properties {
         // the input property.
         let mut expected = prop;
         expected.priv_flags -= PrivilegedPageFlags::AVAIL1;
+        let expected = effective_page_property(expected);
         assert_eq!(queried, expected);
     }
 
@@ -463,8 +464,9 @@ mod arch_pte_impls {
                 let repr = PteScalar::Mapped(paddr, prop);
                 let pte = PageTableEntry::from_repr(&repr, level);
                 let parsed_repr = pte.to_repr(level);
+                let expected_repr = PteScalar::Mapped(paddr, effective_page_property(prop));
 
-                assert_eq!(repr, parsed_repr);
+                assert_eq!(expected_repr, parsed_repr);
             }
         }
     }
@@ -606,7 +608,10 @@ mod navigation {
         assert_eq!(pa, first_frame);
         assert_eq!(
             prop,
-            PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback)
+            effective_page_property(PageProperty::new_user(
+                PageFlags::RW,
+                CachePolicy::Writeback,
+            ))
         );
     }
 
@@ -762,7 +767,7 @@ mod unmap {
         assert_eq!(va, virt_range.start);
         assert_eq!(item.0, phys_addr);
         assert_eq!(item.1, 1);
-        assert_eq!(item.2, page_property);
+        assert_eq!(item.2, effective_page_property(page_property));
     }
 
     #[ktest]
@@ -852,7 +857,7 @@ mod mapping {
             assert_eq!(frag_va, unmap_va_range.start);
             assert_eq!(item.0, expected_pa_start);
             assert_eq!(item.1, 1);
-            assert_eq!(item.2, page_property);
+            assert_eq!(item.2, effective_page_property(page_property));
         }
 
         // Confirms that the specific page is unmapped.
@@ -890,6 +895,7 @@ mod mapping {
 
         let mapped_pa_of_va = |va: Vaddr| va - (from.start - to.start);
         let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback);
+        let effective_prop = effective_page_property(prop);
 
         map_untracked(&pt, from.start, to.clone(), prop);
 
@@ -910,8 +916,7 @@ mod mapping {
                 } else {
                     assert_eq!(level, 1);
                 }
-                assert_eq!(prop.flags, PageFlags::RW);
-                assert_eq!(prop.cache, CachePolicy::Writeback);
+                assert_eq!(prop, effective_prop);
 
                 if frame_i < 514 {
                     assert_eq!(va.start, from.start + frame_i * PAGE_SIZE * two_mb_ppn);
@@ -947,7 +952,10 @@ mod mapping {
             assert_eq!(va_low_pa, mapped_pa_of_va(va_low));
             assert_eq!(
                 prop_low,
-                PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback)
+                effective_page_property(PageProperty::new_user(
+                    PageFlags::RW,
+                    CachePolicy::Writeback,
+                ))
             );
         }
 
@@ -963,8 +971,13 @@ mod mapping {
 
                 assert_eq!(pa, mapped_pa_of_va(va.start));
                 assert_eq!(level, 1);
-                assert_eq!(prop.flags, PageFlags::R);
-                assert_eq!(prop.cache, CachePolicy::Writeback);
+                assert_eq!(
+                    prop,
+                    effective_page_property(PageProperty::new_user(
+                        PageFlags::R,
+                        CachePolicy::Writeback,
+                    ))
+                );
 
                 let Ok(()) = cursor.jump(va.end) else {
                     break;
@@ -981,7 +994,10 @@ mod mapping {
             assert_eq!(va_high_pa, mapped_pa_of_va(va_high));
             assert_eq!(
                 prop_high,
-                PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback)
+                effective_page_property(PageProperty::new_user(
+                    PageFlags::RW,
+                    CachePolicy::Writeback,
+                ))
             );
         }
     }
@@ -1013,8 +1029,7 @@ mod protection_and_query {
             let (_, prop) = page_table
                 .page_walk(va_to_check)
                 .expect("mapping should exist");
-            assert_eq!(prop.flags, PageFlags::RW);
-            assert_eq!(prop.cache, CachePolicy::Writeback);
+            assert_eq!(prop, effective_page_property(page_property));
         }
 
         // Protects a specific range by removing the write flag.
@@ -1029,15 +1044,20 @@ mod protection_and_query {
             let (_, prop) = page_table
                 .page_walk(va_to_check)
                 .expect("mapping should exist");
-            assert_eq!(prop.flags, PageFlags::R);
-            assert_eq!(prop.cache, CachePolicy::Writeback);
+            assert_eq!(
+                prop,
+                effective_page_property(PageProperty::new_user(
+                    PageFlags::R,
+                    CachePolicy::Writeback,
+                ))
+            );
         }
 
         // Checks that pages immediately before and after the protected range still have RW flags.
         let (_, prop_before) = page_table.page_walk(PAGE_SIZE * 17).unwrap();
-        assert_eq!(prop_before.flags, PageFlags::RW);
+        assert_eq!(prop_before, effective_page_property(page_property));
         let (_, prop_after) = page_table.page_walk(PAGE_SIZE * 20).unwrap();
-        assert_eq!(prop_after.flags, PageFlags::RW);
+        assert_eq!(prop_after, effective_page_property(page_property));
     }
 
     #[ktest]
@@ -1082,7 +1102,10 @@ mod protection_and_query {
 
         // Verifies that the originally mapped page is now protected.
         let (_, prop_protected) = page_table.page_walk(0x1000).unwrap();
-        assert_eq!(prop_protected.flags, PageFlags::R);
+        assert_eq!(
+            prop_protected,
+            effective_page_property(PageProperty::new_user(PageFlags::R, CachePolicy::Writeback,))
+        );
     }
 }
 
@@ -1108,7 +1131,7 @@ mod boot_pt {
         let root_paddr = boot_pt.root_address();
         assert_eq!(
             unsafe { page_walk::<KernelPtConfig>(root_paddr, from_virt + 1) },
-            Some((to_phys + 1, page_property))
+            Some((to_phys + 1, effective_page_property(page_property)))
         );
     }
 
@@ -1159,7 +1182,7 @@ mod boot_pt {
         unsafe { boot_pt.map_base_page(from1, to_phys1, prop1) };
         assert_eq!(
             unsafe { page_walk::<KernelPtConfig>(root_paddr, from1 + 1) },
-            Some((to_phys1 + 1, prop1))
+            Some((to_phys1 + 1, effective_page_property(prop1)))
         );
 
         // Protects page 1.
@@ -1168,7 +1191,10 @@ mod boot_pt {
             PageProperty::new_user(PageFlags::RX, CachePolicy::Writeback);
         assert_eq!(
             unsafe { page_walk::<KernelPtConfig>(root_paddr, from1 + 1) },
-            Some((to_phys1 + 1, expected_prop1_protected))
+            Some((
+                to_phys1 + 1,
+                effective_page_property(expected_prop1_protected),
+            ))
         );
 
         // Maps page 2.
@@ -1178,7 +1204,7 @@ mod boot_pt {
         unsafe { boot_pt.map_base_page(from2, to_phys2, prop2) };
         assert_eq!(
             unsafe { page_walk::<KernelPtConfig>(root_paddr, from2 + 2) },
-            Some((to_phys2 + 2, prop2))
+            Some((to_phys2 + 2, effective_page_property(prop2)))
         );
 
         // Protects page 2.
@@ -1187,7 +1213,10 @@ mod boot_pt {
             PageProperty::new_user(PageFlags::RW, CachePolicy::Uncacheable);
         assert_eq!(
             unsafe { page_walk::<KernelPtConfig>(root_paddr, from2 + 2) },
-            Some((to_phys2 + 2, expected_prop2_protected))
+            Some((
+                to_phys2 + 2,
+                effective_page_property(expected_prop2_protected),
+            ))
         );
     }
 }
