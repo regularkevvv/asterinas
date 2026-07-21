@@ -683,26 +683,35 @@ impl Vmo {
 ///
 /// This structure is created by calling [`Vmo::as_backed_vmo()`] and provides
 /// access to backend-specific functionality like reading from storage and
-/// managing dirty pages.
+/// managing cached pages and writeback.
 pub struct BackedVmo<'a> {
     vmo: &'a Vmo,
     backend: Arc<dyn PageCacheBackend>,
 }
 
 impl<'a> BackedVmo<'a> {
-    /// Writes back dirty pages in the specified byte range to the backend storage.
-    pub(super) fn flush_dirty_pages(&self, range: &Range<usize>) -> Result<()> {
+    /// Writes back committed pages in the specified byte range to backend storage.
+    ///
+    /// Buffered writes explicitly mark cache pages dirty, but shared writable
+    /// mappings can modify the same frames through page-table entries. Until
+    /// page-table dirty bits are harvested back into `CachePageMeta`, a page
+    /// changed through such a mapping remains `UpToDate` and a dirty-only scan
+    /// would silently lose its contents at `sync(2)`. Conservatively write all
+    /// initialized pages so filesystem sync remains a durability boundary for
+    /// both buffered I/O and mmap writers. Uninitialized pages are skipped.
+    pub(super) fn flush_committed_pages(&self, range: &Range<usize>) -> Result<()> {
         let locked_pages = self.vmo.pages.lock();
         if range.start >= self.size() {
             return Ok(());
         }
 
         let page_idx_range = get_page_idx_range(range);
-        let dirty_pages =
-            self.collect_pages_if(locked_pages, page_idx_range, |_, page| page.is_dirty());
+        let pages_to_flush = self.collect_pages_if(locked_pages, page_idx_range, |_, page| {
+            page.is_dirty() || page.is_up_to_date()
+        });
 
-        let mut io_batch = IoBatch::with_capacity(dirty_pages.len());
-        for (idx, page) in dirty_pages {
+        let mut io_batch = IoBatch::with_capacity(pages_to_flush.len());
+        for (idx, page) in pages_to_flush {
             let locked_page = page.lock();
             self.backend
                 .write_page_async(idx, locked_page, &mut io_batch)?;
