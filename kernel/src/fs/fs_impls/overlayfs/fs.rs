@@ -530,17 +530,57 @@ impl OverlayInode {
 
     pub fn rename(
         &self,
-        _old_name: &str,
-        _target: &Arc<dyn Inode>,
-        _new_name: &str,
-        _mode: RenameMode,
+        old_name: &str,
+        target: &Arc<dyn Inode>,
+        new_name: &str,
+        mode: RenameMode,
     ) -> Result<()> {
-        // TODO: Support the rename operation based on the `redirect_mode` feature,
-        // rename the upper only may unexpectedly reveal the lower inodes.
-        return_errno_with_message!(
-            Errno::EOPNOTSUPP,
-            "rename is not supported in current overlayfs"
-        );
+        let target = target
+            .downcast_ref::<OverlayInode>()
+            .ok_or_else(|| Error::with_message(Errno::EXDEV, "not same fs"))?;
+
+        // Full OverlayFS rename needs redirect-dir and whiteout handling. The
+        // upper-only, same-directory case does not: moving a file that has no
+        // lower counterpart cannot reveal anything at the old name.
+        if !core::ptr::eq(self, target) || mode == RenameMode::Exchange {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "overlayfs rename is limited to upper-only files in one directory"
+            );
+        }
+
+        let source = self.lookup(old_name)?;
+        let source = source.downcast_ref::<OverlayInode>().unwrap();
+        if source.type_ == InodeType::Dir || !source.has_valid_upper() || source.has_valid_lower() {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "overlayfs rename source is not an upper-only non-directory"
+            );
+        }
+
+        let destination = match self.lookup(new_name) {
+            Ok(inode) => Some(inode),
+            Err(error) if error.error() == Errno::ENOENT => None,
+            Err(error) => return Err(error),
+        };
+        if mode == RenameMode::NoReplace && destination.is_some() {
+            return_errno!(Errno::EEXIST);
+        }
+        if destination
+            .as_ref()
+            .is_some_and(|inode| inode.type_() == InodeType::Dir)
+        {
+            return_errno!(Errno::EISDIR);
+        }
+
+        let upper = self.build_upper_recursively_if_needed()?;
+        if upper.lookup(&whiteout_name(new_name)).is_ok() {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "overlayfs rename destination has a whiteout"
+            );
+        }
+        upper.rename(old_name, &upper, new_name, mode)
     }
 
     pub fn sync_all(&self) -> Result<()> {
@@ -1451,6 +1491,36 @@ mod tests {
         // No assumption on the return value
         let _ = d1.readdir_at(0, &mut d1_fnames).unwrap();
         assert_eq!(d1_fnames, [".", "..", "f11", "f12"]);
+    }
+
+    #[ktest]
+    fn rename_upper_only_file_in_same_directory() {
+        let fs = create_overlay_fs();
+        let root = fs.root_inode();
+
+        root.create("upload.tmp", InodeType::File, InodeMode::all())
+            .unwrap();
+        root.rename("upload.tmp", &root, "upload", RenameMode::Replace)
+            .unwrap();
+
+        assert_eq!(
+            root.lookup("upload.tmp").unwrap_err().error(),
+            Errno::ENOENT
+        );
+        assert_eq!(root.lookup("upload").unwrap().type_(), InodeType::File);
+    }
+
+    #[ktest]
+    fn rename_lower_file_remains_unsupported() {
+        let fs = create_overlay_fs();
+        let root = fs.root_inode();
+
+        let error = root
+            .rename("f1", &root, "renamed", RenameMode::Replace)
+            .unwrap_err();
+
+        assert_eq!(error.error(), Errno::EOPNOTSUPP);
+        assert_eq!(root.lookup("f1").unwrap().type_(), InodeType::File);
     }
 
     #[ktest]
