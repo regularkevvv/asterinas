@@ -39,6 +39,7 @@ use crate::{
 };
 
 const OVERLAY_FS_MAGIC: u64 = 0x794C7630;
+const COPY_UP_CHUNK_SIZE: usize = 64 * 1024;
 
 /// An `OverlayFs` is a union pseudo file system employed to merge
 /// upper and lower directories that potentially comes from different
@@ -492,7 +493,7 @@ impl OverlayInode {
     pub fn page_cache(&self) -> Option<PageCache> {
         let _ = self.get_top_valid_inode().page_cache()?;
         // Do copy-up for the potential memory mapping operations
-        let upper = self.build_upper_recursively_if_needed().unwrap();
+        let upper = self.build_upper_recursively_if_needed().ok()?;
         upper.page_cache()
     }
 
@@ -868,17 +869,28 @@ impl OverlayInode {
             return Ok(());
         }
 
-        // TODO: Find a way to cut this copy, like just copy chunks of data from two page caches directly.
         let lower_size = lower.size();
-        let data_buf = FrameAllocOptions::new()
-            .zeroed(false)
-            .alloc_segment(lower_size.align_up(BLOCK_SIZE) / BLOCK_SIZE)?;
+        let mut offset = 0;
+        while offset < lower_size {
+            let chunk_len = (lower_size - offset).min(COPY_UP_CHUNK_SIZE);
+            let data_buf = FrameAllocOptions::new()
+                .zeroed(false)
+                .alloc_segment(chunk_len.align_up(BLOCK_SIZE) / BLOCK_SIZE)?;
 
-        let mut writer = data_buf.writer().to_fallible();
-        let read_len = lower.read_at(0, &mut writer, StatusFlags::empty())?;
+            let mut writer = data_buf.writer().to_fallible();
+            let read_len =
+                lower.read_at(offset, &mut writer.limit(chunk_len), StatusFlags::empty())?;
+            if read_len == 0 {
+                return_errno_with_message!(Errno::EIO, "short read while copying up file");
+            }
 
-        let mut reader = data_buf.reader().to_fallible();
-        let _ = upper.write_at(0, reader.limit(read_len), StatusFlags::empty())?;
+            let mut reader = data_buf.reader().to_fallible();
+            let write_len = upper.write_at(offset, reader.limit(read_len), StatusFlags::empty())?;
+            if write_len != read_len {
+                return_errno_with_message!(Errno::EIO, "short write while copying up file");
+            }
+            offset += read_len;
+        }
         Ok(())
     }
 
@@ -1497,6 +1509,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(xattr_value.as_slice(), "f2_xattr_value".as_bytes());
+    }
+
+    #[ktest]
+    fn copy_up_large_file_in_bounded_chunks() {
+        crate::time::clocks::init_for_ktest();
+        crate::fs::vfs::init();
+
+        let upper = Path::new_fs_root(new_dummy_mount());
+        let lower = Path::new_fs_root(new_dummy_mount());
+        let lower_file = lower
+            .new_fs_child("large", InodeType::File, InodeMode::all())
+            .unwrap();
+        let data: Vec<u8> = (0..COPY_UP_CHUNK_SIZE * 2 + 123)
+            .map(|offset| offset as u8)
+            .collect();
+        lower_file.inode().write_bytes_at(0, &data).unwrap();
+
+        let fs = OverlayFs::new(upper.clone(), vec![lower], upper).unwrap();
+        let root = fs.root_inode();
+        let file = root.lookup("large").unwrap();
+        file.write_bytes_at(data.len() - 1, &[0xff]).unwrap();
+
+        let mut copied = vec![0u8; data.len()];
+        file.read_bytes_at(0, &mut copied).unwrap();
+        let mut expected = data;
+        *expected.last_mut().unwrap() = 0xff;
+        assert_eq!(copied, expected);
     }
 
     #[ktest]
