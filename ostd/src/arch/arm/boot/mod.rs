@@ -142,3 +142,21 @@ unsafe extern "C" fn arm_boot(device_tree_paddr: usize) -> ! {
     // once after setting up necessary resources.
     unsafe { start_kernel() };
 }
+
+#[cfg(ktest)]
+mod tests {
+    use ostd_macros::ktest;
+
+    #[ktest]
+    fn mmu_enable_is_synchronized_before_virtual_execution() {
+        let assembly = include_str!("bsp_boot.S");
+        let enable = assembly.find("msr     sctlr_el1, x4").unwrap();
+        let barrier = assembly[enable..].find("    isb").unwrap() + enable;
+        let virtual_stack = assembly
+            .find("ldr     x4, =(boot_stack_top + KERNEL_VMA)")
+            .unwrap();
+
+        assert!(enable < barrier);
+        assert!(barrier < virtual_stack);
+    }
+}
