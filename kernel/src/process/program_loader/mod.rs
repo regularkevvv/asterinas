@@ -55,7 +55,7 @@ impl ProgramToLoad {
                 (buffer, len)
             };
 
-            let Some(mut new_argv) = parse_shebang_line(&file_first_page[..len])? else {
+            let Some(interpreter_argv) = parse_shebang_line(&file_first_page[..len])? else {
                 break (file_first_page, len);
             };
 
@@ -65,15 +65,20 @@ impl ProgramToLoad {
             recursive_limit -= 1;
 
             let interpreter = {
-                let filename = new_argv[0].to_str()?.to_string();
+                let filename = interpreter_argv[0].to_str()?.to_string();
                 let fs_path = FsPath::try_from(filename.as_str())?;
                 path_resolver.lookup(&fs_path)?
             };
             check_executable_inode(interpreter.inode().as_ref())?;
 
             // Update the argument list and the executable inode. Then, try again.
-            new_argv.extend(argv);
-            argv = new_argv;
+            let script_path = CString::new(
+                path_resolver
+                    .make_abs_path(&elf_file)
+                    .into_string()
+                    .as_str(),
+            )?;
+            argv = build_shebang_argv(interpreter_argv, script_path, argv);
             elf_file = interpreter;
         };
 
@@ -105,6 +110,56 @@ impl ProgramToLoad {
         )?;
 
         Ok(elf_load_info)
+    }
+}
+
+fn build_shebang_argv(
+    mut interpreter_argv: Vec<CString>,
+    script_path: CString,
+    original_argv: Vec<CString>,
+) -> Vec<CString> {
+    // Linux passes the interpreter, optional shebang argument, script path,
+    // then the caller's arguments after argv[0].
+    interpreter_argv.push(script_path);
+    interpreter_argv.extend(original_argv.into_iter().skip(1));
+    interpreter_argv
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn shebang_argv_includes_script_path_and_drops_original_argv0() {
+        let interpreter = vec![
+            CString::new("/bin/sh").unwrap(),
+            CString::new("-e").unwrap(),
+        ];
+        let original = vec![
+            CString::new("post-install").unwrap(),
+            CString::new("5.9-r2").unwrap(),
+        ];
+
+        let argv = build_shebang_argv(
+            interpreter,
+            CString::new("/lib/apk/exec/zsh-5.9-r2.post-install").unwrap(),
+            original,
+        );
+        let argv = argv
+            .iter()
+            .map(|arg| arg.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            argv,
+            [
+                "/bin/sh",
+                "-e",
+                "/lib/apk/exec/zsh-5.9-r2.post-install",
+                "5.9-r2"
+            ]
+        );
     }
 }
 
