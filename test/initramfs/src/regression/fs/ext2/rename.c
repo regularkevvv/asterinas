@@ -101,6 +101,24 @@ FN_TEST(rename_to_new_name)
 }
 END_TEST()
 
+FN_TEST(renameat_uses_directory_fds)
+{
+	ensure_dir(BASE_DIR);
+
+	int dirfd = TEST_SUCC(open(BASE_DIR, O_RDONLY | O_DIRECTORY));
+	int fd = TEST_SUCC(openat(dirfd, "renameat-old", O_CREAT | O_WRONLY,
+			       0644));
+	TEST_SUCC(close(fd));
+	TEST_SUCC(renameat(dirfd, "renameat-old", dirfd, "renameat-new"));
+	TEST_ERRNO(faccessat(dirfd, "renameat-old", F_OK, 0), ENOENT);
+	TEST_SUCC(faccessat(dirfd, "renameat-new", F_OK, 0));
+	TEST_SUCC(unlinkat(dirfd, "renameat-new", 0));
+	TEST_SUCC(close(dirfd));
+
+	cleanup_test_tree();
+}
+END_TEST()
+
 FN_TEST(rename_overwrites_negative_cache_on_ext2)
 {
 	ensure_dir(BASE_DIR);
