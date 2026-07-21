@@ -5,6 +5,11 @@ use core::sync::atomic::AtomicU32;
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 use bitflags::bitflags;
 
+#[cfg(target_arch = "aarch64")]
+const O_DIRECT_BITS: u32 = 1 << 16;
+#[cfg(not(target_arch = "aarch64"))]
+const O_DIRECT_BITS: u32 = 1 << 14;
+
 bitflags! {
     pub struct StatusFlags: u32 {
         /// append on each write
@@ -16,8 +21,10 @@ bitflags! {
         /// signal-driven I/O
         const O_ASYNC = 1 << 13;
         /// direct I/O
-        const O_DIRECT = 1 << 14;
-        /// on x86_64, O_LARGEFILE is 0
+        const O_DIRECT = O_DIRECT_BITS;
+        /// Use large-file offsets. This is retained for Linux AArch64 ABI compatibility.
+        #[cfg(target_arch = "aarch64")]
+        const O_LARGEFILE = 1 << 17;
         /// not update st_atime
         const O_NOATIME = 1 << 18;
         /// synchronized I/O, data and metadata

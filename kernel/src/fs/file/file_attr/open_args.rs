@@ -79,3 +79,40 @@ impl OpenArgs {
             && !self.status_flags.contains(StatusFlags::O_PATH)
     }
 }
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[cfg(target_arch = "aarch64")]
+    #[ktest]
+    fn aarch64_largefile_still_follows_symlinks() {
+        let args = OpenArgs::from_flags_and_mode(1 << 17, InodeMode::empty()).unwrap();
+
+        assert!(args.status_flags.contains(StatusFlags::O_LARGEFILE));
+        assert!(!args.creation_flags.contains(CreationFlags::O_NOFOLLOW));
+        assert!(args.follow_tail_link());
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[ktest]
+    fn aarch64_creation_and_direct_io_flags_use_linux_values() {
+        let directory = OpenArgs::from_flags_and_mode(1 << 14, InodeMode::empty()).unwrap();
+        assert!(
+            directory
+                .creation_flags
+                .contains(CreationFlags::O_DIRECTORY)
+        );
+        assert!(!directory.status_flags.contains(StatusFlags::O_DIRECT));
+
+        let nofollow = OpenArgs::from_flags_and_mode(1 << 15, InodeMode::empty()).unwrap();
+        assert!(nofollow.creation_flags.contains(CreationFlags::O_NOFOLLOW));
+        assert!(!nofollow.follow_tail_link());
+
+        let direct = OpenArgs::from_flags_and_mode(1 << 16, InodeMode::empty()).unwrap();
+        assert!(direct.status_flags.contains(StatusFlags::O_DIRECT));
+        assert!(!direct.creation_flags.contains(CreationFlags::O_DIRECTORY));
+    }
+}
