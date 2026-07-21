@@ -8,6 +8,8 @@ if [ "$(uname -m)" = "x86_64" ]; then
     ./arch_prctl/fsgsbase
 fi
 
+./cache_maintenance/cache_maintenance
+
 ./clone3/clone_exit_signal
 ./clone3/clone_files
 ./clone3/clone_invalid_exit_signal

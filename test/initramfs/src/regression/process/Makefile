@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 SUBDIRS := \
+	cache_maintenance \
 	clone3 \
 	cpu_affinity \
 	execve \

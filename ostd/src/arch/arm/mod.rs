@@ -118,6 +118,15 @@ pub(crate) fn enable_cpu_features() {
             "msr cpacr_el1, {tmp}",
             tmp = out(reg) _,
         );
+        asm!(
+            "mrs {tmp}, sctlr_el1",
+            "orr {tmp}, {tmp}, #0xc000",
+            "orr {tmp}, {tmp}, #(1 << 26)",
+            "msr sctlr_el1, {tmp}",
+            "isb",
+            tmp = out(reg) _,
+            options(nomem, nostack, preserves_flags),
+        );
 
         let mut cntkctl: u64;
         asm!(
