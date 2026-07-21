@@ -63,6 +63,10 @@ fi
 ./signal/signal_test2
 ./signal/tgkill_running_thread
 
+if [ "$(uname -m)" = "aarch64" ]; then
+    ./signal/vdso_rt_sigreturn
+fi
+
 if [ "$(uname -m)" = "x86_64" ]; then
     ./signal/fault_signals
     ./signal/sigaltstack
