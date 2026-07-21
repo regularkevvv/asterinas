@@ -43,6 +43,8 @@ pub fn sys_clone_backwards(
     ctx: &Context,
     parent_context: &UserContext,
 ) -> Result<SyscallReturn> {
+    let (parent_tidptr, child_tidptr, tls) =
+        reorder_clone_backwards_args(parent_tidptr, tls, child_tidptr);
     sys_clone(
         clone_flags,
         new_sp,
@@ -52,6 +54,33 @@ pub fn sys_clone_backwards(
         ctx,
         parent_context,
     )
+}
+
+fn reorder_clone_backwards_args(
+    parent_tidptr: Vaddr,
+    tls: u64,
+    child_tidptr: Vaddr,
+) -> (Vaddr, Vaddr, u64) {
+    (parent_tidptr, child_tidptr, tls)
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn backwards_clone_places_tls_after_child_tid() {
+        let parent_tidptr = 0x1111;
+        let tls = 0x2222;
+        let child_tidptr = 0x3333;
+
+        assert_eq!(
+            reorder_clone_backwards_args(parent_tidptr, tls, child_tidptr),
+            (parent_tidptr, child_tidptr, tls)
+        );
+    }
 }
 
 #[cfg(target_arch = "loongarch64")]
