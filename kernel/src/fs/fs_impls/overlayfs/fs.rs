@@ -937,10 +937,10 @@ impl OverlayInode {
     fn copy_up_xattr(lower: &Arc<dyn Inode>, upper: &Arc<dyn Inode>) -> Result<()> {
         debug_assert!(lower.type_() == upper.type_());
 
-        let list_len = lower.list_xattr(
+        let list_len = xattr_list_len_or_empty(lower.list_xattr(
             XattrNamespace::Trusted,
             &mut VmWriter::from([].as_mut_slice()).to_fallible(),
-        )?;
+        ))?;
         if list_len == 0 {
             return Ok(());
         }
@@ -972,6 +972,14 @@ impl OverlayInode {
             )?;
         }
         Ok(())
+    }
+}
+
+fn xattr_list_len_or_empty(result: Result<usize>) -> Result<usize> {
+    match result {
+        Ok(len) => Ok(len),
+        Err(error) if error.error() == Errno::EOPNOTSUPP => Ok(0),
+        Err(error) => Err(error),
     }
 }
 
@@ -1606,6 +1614,18 @@ mod tests {
         let mut expected = data;
         *expected.last_mut().unwrap() = 0xff;
         assert_eq!(copied, expected);
+    }
+
+    #[ktest]
+    fn copy_up_treats_unsupported_lower_xattrs_as_empty() {
+        let unsupported = Error::with_message(Errno::EOPNOTSUPP, "xattrs unsupported");
+        assert_eq!(xattr_list_len_or_empty(Err(unsupported)).unwrap(), 0);
+
+        let io_error = Error::with_message(Errno::EIO, "xattr I/O error");
+        assert_eq!(
+            xattr_list_len_or_empty(Err(io_error)).unwrap_err().error(),
+            Errno::EIO
+        );
     }
 
     #[ktest]
