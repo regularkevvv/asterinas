@@ -332,3 +332,32 @@ unsafe impl PteTrait for PageTableEntry {
         }
     }
 }
+
+#[cfg(ktest)]
+mod tests {
+    use ostd_macros::ktest;
+
+    const PAN_OFF: &str = ".inst   0xd500409f";
+    const PAN_ON: &str = ".inst   0xd500419f";
+
+    #[ktest]
+    fn fallible_user_copies_scope_pan() {
+        for assembly in [
+            include_str!("atomic_cmpxchg_fallible.S"),
+            include_str!("atomic_load_fallible.S"),
+            include_str!("memcpy_fallible.S"),
+            include_str!("memset_fallible.S"),
+        ] {
+            assert!(assembly.contains("id_aa64mmfr1_el1"));
+            assert!(assembly.contains(PAN_OFF));
+            assert!(assembly.contains(PAN_ON));
+        }
+
+        for assembly in [
+            include_str!("atomic_cmpxchg_fallible.S"),
+            include_str!("atomic_load_fallible.S"),
+        ] {
+            assert_eq!(assembly.matches(PAN_ON).count(), 2);
+        }
+    }
+}
