@@ -543,9 +543,7 @@ impl Socket for UnixStreamSocket {
             IoEvents::IN,
             self.timeouts.recv_timeout(),
             flags.contains(RecvFlags::MSG_DONTWAIT),
-            || {
-                self.try_recv(writer, flags)
-            },
+            || self.try_recv(writer, flags),
         )?;
 
         let message_header = MessageHeader::new(None, control_messages);

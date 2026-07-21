@@ -318,9 +318,7 @@ impl Socket for UnixDatagramSocket {
             IoEvents::IN,
             self.timeouts.recv_timeout(),
             flags.contains(RecvFlags::MSG_DONTWAIT),
-            || {
-                self.local_receiver.try_recv(writer, flags)
-            },
+            || self.local_receiver.try_recv(writer, flags),
         )?;
 
         let message_header = MessageHeader::new(Some(peer_addr.into()), control_messages);
