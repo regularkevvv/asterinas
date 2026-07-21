@@ -342,3 +342,15 @@ fn add_feature_entries(
     let content = toml::to_string(&manifest).unwrap();
     fs::write(manifest_path, content).unwrap();
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn aarch64_linker_script_uses_virt_machine_load_address() {
+        let linker_script = include_str!("aarch64.ld.template");
+
+        assert!(linker_script.contains("KERNEL_LMA = 0x80000000;"));
+        assert!(linker_script.contains("KERNEL_VMA = 0xffffffff80000000;"));
+        assert!(!linker_script.contains("0x40200000"));
+    }
+}
