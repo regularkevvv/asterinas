@@ -9,6 +9,7 @@ set -e
 ./pty/open_pty
 ./pty/pty_blocking
 ./pty/pty_packet_mode
+./pty/termios_cow_fault
 
 ./vt/vt_ioctl
 
