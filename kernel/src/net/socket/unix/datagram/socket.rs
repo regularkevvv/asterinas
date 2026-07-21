@@ -10,14 +10,17 @@ use aster_rights::ReadDupOp;
 use super::message::{MessageQueue, MessageReceiver};
 use crate::{
     events::IoEvents,
-    fs::{pseudofs::SockFs, vfs::path::Path},
+    fs::{
+        file::{FileCommon, StatusFlags},
+        pseudofs::SockFs,
+    },
     net::socket::{
         Socket,
         options::{Error as SocketError, PeerCred, SocketOption, macros::sock_option_mut},
         private::SocketPrivate,
         unix::{CUserCred, UnixSocketAddr, cred::SocketCred, ctrl_msg::AuxiliaryData},
         util::{
-            MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr,
+            MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
             options::{
                 GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
             },
@@ -38,9 +41,8 @@ pub struct UnixDatagramSocket {
     // when a socket pair is created using the `socketpair` system call.
     peer_cred: Option<SocketCred>,
 
-    is_nonblocking: AtomicBool,
     is_write_shutdown: AtomicBool,
-    pseudo_path: Path,
+    common: FileCommon,
 }
 
 #[derive(Clone, Debug)]
@@ -79,15 +81,19 @@ impl UnixDatagramSocket {
     }
 
     fn new_raw(is_nonblocking: bool) -> Self {
+        let status_flags = if is_nonblocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
         Self {
             local_receiver: MessageReceiver::new(),
             remote_queue: RwLock::new(None),
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             peer_cred: None,
-            is_nonblocking: AtomicBool::new(is_nonblocking),
             is_write_shutdown: AtomicBool::new(false),
-            pseudo_path: SockFs::new_path(),
+            common: FileCommon::new(SockFs::new_path(), status_flags),
         }
     }
 
@@ -96,7 +102,7 @@ impl UnixDatagramSocket {
         reader: &mut dyn MultiRead,
         mut aux_data: AuxiliaryData,
         remote: Option<UnixSocketAddr>,
-        _flags: SendRecvFlags,
+        _flags: SendFlags,
         timeout: Option<Duration>,
     ) -> Result<usize> {
         if self.is_write_shutdown.load(Ordering::Relaxed) {
@@ -162,11 +168,7 @@ impl Pollable for UnixDatagramSocket {
 
 impl SocketPrivate for UnixDatagramSocket {
     fn is_nonblocking(&self) -> bool {
-        self.is_nonblocking.load(Ordering::Relaxed)
-    }
-
-    fn set_nonblocking(&self, nonblocking: bool) {
-        self.is_nonblocking.store(nonblocking, Ordering::Relaxed);
+        self.common.is_nonblocking()
     }
 }
 
@@ -274,7 +276,7 @@ impl Socket for UnixDatagramSocket {
         &self,
         reader: &mut dyn MultiRead,
         message_header: MessageHeader,
-        flags: SendRecvFlags,
+        flags: SendFlags,
     ) -> Result<usize> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
@@ -305,25 +307,25 @@ impl Socket for UnixDatagramSocket {
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
-    ) -> Result<(usize, MessageHeader)> {
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let (received_bytes, control_messages, peer_addr) =
+        let (output, control_messages, peer_addr) =
             self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
                 self.local_receiver.try_recv(writer, flags)
             })?;
 
         let message_header = MessageHeader::new(Some(peer_addr.into()), control_messages);
 
-        Ok((received_bytes, message_header))
+        Ok((output, message_header))
     }
 
-    fn pseudo_path(&self) -> &Path {
-        &self.pseudo_path
+    fn common(&self) -> &FileCommon {
+        &self.common
     }
 }
 

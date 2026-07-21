@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use aster_bigtcp::{
     socket::{NeedIfacePoll, RawTcpOption, RawTcpSetOption},
     time::Duration,
@@ -26,7 +24,10 @@ use super::{
 };
 use crate::{
     events::IoEvents,
-    fs::{file::FileLike, pseudofs::SockFs, vfs::path::Path},
+    fs::{
+        file::{FileCommon, FileLike, StatusFlags},
+        pseudofs::SockFs,
+    },
     net::{
         iface::Iface,
         socket::{
@@ -37,7 +38,7 @@ use crate::{
             },
             private::SocketPrivate,
             util::{
-                MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr,
+                MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
                 options::{
                     GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
                 },
@@ -65,9 +66,8 @@ pub struct StreamSocket {
     options: RwLock<OptionSet>,
     timeouts: SocketTimeouts,
 
-    is_nonblocking: AtomicBool,
     pollee: Pollee,
-    pseudo_path: Path,
+    common: FileCommon,
 }
 
 enum State {
@@ -109,13 +109,17 @@ impl OptionSet {
 impl StreamSocket {
     pub fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
         let init_stream = InitStream::new(family);
+        let status_flags = if is_nonblocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
         Arc::new(Self {
             state: RwLock::new(Takeable::new(State::Init(init_stream))),
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
-            is_nonblocking: AtomicBool::new(is_nonblocking),
             pollee: Pollee::new(),
-            pseudo_path: SockFs::new_path(),
+            common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
 
@@ -123,6 +127,7 @@ impl StreamSocket {
         connected_stream: ConnectedStream,
         listener_options: &OptionSet,
         listener_timeouts: &SocketTimeouts,
+        is_nonblocking: bool,
     ) -> Arc<Self> {
         let options = connected_stream.raw_with(|raw_tcp_socket| {
             let mut options = OptionSet::new();
@@ -158,13 +163,18 @@ impl StreamSocket {
         let pollee = Pollee::new();
         connected_stream.init_observer(StreamObserver::new(pollee.clone()));
 
+        let status_flags = if is_nonblocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
+
         Arc::new(Self {
             state: RwLock::new(Takeable::new(State::Connected(connected_stream))),
             options: RwLock::new(options),
             timeouts: listener_timeouts.clone(),
-            is_nonblocking: AtomicBool::new(false),
             pollee,
-            pseudo_path: SockFs::new_path(),
+            common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
 
@@ -321,7 +331,7 @@ impl StreamSocket {
         }
     }
 
-    fn try_accept(&self) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+    fn try_accept(&self, is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         let state = self.read_updated_state();
 
         let State::Listen(listen_stream) = state.as_ref() else {
@@ -331,8 +341,12 @@ impl StreamSocket {
         let accepted = listen_stream.try_accept().map(|connected_stream| {
             let remote_endpoint = connected_stream.remote_endpoint();
             let listener_options = self.options.read();
-            let accepted_socket =
-                Self::new_accepted(connected_stream, &listener_options, &self.timeouts);
+            let accepted_socket = Self::new_accepted(
+                connected_stream,
+                &listener_options,
+                &self.timeouts,
+                is_nonblocking,
+            );
             (accepted_socket as _, remote_endpoint.into())
         });
         let iface_to_poll = listen_stream.iface().clone();
@@ -347,7 +361,7 @@ impl StreamSocket {
     fn try_recv(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
+        flags: RecvFlags,
     ) -> Result<(usize, SocketAddr)> {
         let state = self.read_updated_state();
 
@@ -381,7 +395,7 @@ impl StreamSocket {
         Ok((recv_bytes, remote_endpoint.into()))
     }
 
-    fn try_send(&self, reader: &mut dyn MultiRead, flags: SendRecvFlags) -> Result<usize> {
+    fn try_send(&self, reader: &mut dyn MultiRead, flags: SendFlags) -> Result<usize> {
         let state = self.read_updated_state();
 
         let connected_stream = match state.as_ref() {
@@ -448,11 +462,7 @@ impl Pollable for StreamSocket {
 
 impl SocketPrivate for StreamSocket {
     fn is_nonblocking(&self) -> bool {
-        self.is_nonblocking.load(Ordering::Relaxed)
-    }
-
-    fn set_nonblocking(&self, nonblocking: bool) {
-        self.is_nonblocking.store(nonblocking, Ordering::Relaxed);
+        self.common.is_nonblocking()
     }
 }
 
@@ -525,9 +535,9 @@ impl Socket for StreamSocket {
         })
     }
 
-    fn accept(&self) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+    fn accept(&self, is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
-            self.try_accept()
+            self.try_accept(is_nonblocking)
         })
     }
 
@@ -580,7 +590,7 @@ impl Socket for StreamSocket {
         &self,
         reader: &mut dyn MultiRead,
         message_header: MessageHeader,
-        flags: SendRecvFlags,
+        flags: SendFlags,
     ) -> Result<usize> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
@@ -610,8 +620,8 @@ impl Socket for StreamSocket {
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
-    ) -> Result<(usize, MessageHeader)> {
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
             warn!("unsupported flags: {:?}", flags);
@@ -628,7 +638,7 @@ impl Socket for StreamSocket {
         // peer address is ignored for connected socket.
         let message_header = MessageHeader::new(None, Vec::new());
 
-        Ok((received_bytes, message_header))
+        Ok((RecvOutput::new_for_stream(received_bytes), message_header))
     }
 
     fn get_option(&self, option: &mut dyn SocketOption) -> Result<()> {
@@ -765,8 +775,8 @@ impl Socket for StreamSocket {
         Ok(())
     }
 
-    fn pseudo_path(&self) -> &Path {
-        &self.pseudo_path
+    fn common(&self) -> &FileCommon {
+        &self.common
     }
 }
 

@@ -574,7 +574,7 @@ impl Mount {
         &self,
         mount_flags: PerMountFlags,
         fs_flags: Option<FsFlags>,
-        data: Option<CString>,
+        data: Option<&str>,
         ctx: &Context,
         _topology: &mut MountTopology,
     ) -> Result<()> {
@@ -674,12 +674,8 @@ impl Mount {
                 .children
                 .read()
                 .get(&mount_point.key())
-                .cloned();
-            if let Some(child_mount) = child_mount {
-                target_mount = child_mount;
-            } else {
-                return None;
-            }
+                .cloned()?;
+            target_mount = child_mount;
         }
 
         Some(target_mount)

@@ -38,7 +38,7 @@ pub trait UserContextApi {
 /// space safely.
 ///
 /// Here is a sample code on how to use `UserMode`.
-///  
+///
 /// ```no_run
 /// use ostd::task::Task;
 ///

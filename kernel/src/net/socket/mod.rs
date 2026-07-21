@@ -3,13 +3,15 @@
 use core::fmt::Display;
 
 use options::SocketOption;
-use util::{MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr};
+use util::{MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr};
 
 use crate::{
     fs::{
-        file::{AccessMode, CreationFlags, FileLike, StatusFlags, file_table::FdFlags},
+        file::{
+            AccessMode, CreationFlags, FileCommon, FileLike, SettableStatusFlags,
+            file_table::FdFlags,
+        },
         pseudofs::SockFs,
-        vfs::path::Path,
     },
     prelude::*,
     util::{MultiRead, MultiWrite},
@@ -34,9 +36,6 @@ mod private {
     pub trait SocketPrivate: Pollable {
         /// Returns whether the socket is in non-blocking mode.
         fn is_nonblocking(&self) -> bool;
-
-        /// Sets whether the socket is in non-blocking mode.
-        fn set_nonblocking(&self, nonblocking: bool);
 
         /// Blocks until some events occur to complete I/O operations.
         ///
@@ -88,7 +87,7 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     }
 
     /// Accepts a connection on the socket.
-    fn accept(&self) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+    fn accept(&self, _is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "accept() is not supported");
     }
 
@@ -124,22 +123,21 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
         &self,
         reader: &mut dyn MultiRead,
         message_header: MessageHeader,
-        flags: SendRecvFlags,
+        flags: SendFlags,
     ) -> Result<usize>;
 
     /// Receives a message from the socket.
     ///
-    /// If successful, the `io_vecs` buffer will be filled with the received content.
-    /// This method returns the length of the received message,
-    /// and the message header.
+    /// If successful, the `writer` buffer will be filled with the received content.
+    /// This method returns the length, flags, and header of the received message.
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
-    ) -> Result<(usize, MessageHeader)>;
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, MessageHeader)>;
 
-    /// Returns a reference to the pseudo path associated with this socket.
-    fn pseudo_path(&self) -> &Path;
+    /// Returns the common state for this socket.
+    fn common(&self) -> &FileCommon;
 }
 
 impl<T: Socket + 'static> FileLike for T {
@@ -150,8 +148,8 @@ impl<T: Socket + 'static> FileLike for T {
         }
 
         // TODO: Set correct flags
-        self.recvmsg(writer, SendRecvFlags::empty())
-            .map(|(len, _)| len)
+        self.recvmsg(writer, RecvFlags::empty())
+            .map(|(output, _)| output.len())
     }
 
     fn write(&self, reader: &mut VmReader) -> Result<usize> {
@@ -159,27 +157,12 @@ impl<T: Socket + 'static> FileLike for T {
         self.sendmsg(
             reader,
             MessageHeader::new(None, Vec::new()),
-            SendRecvFlags::empty(),
+            SendFlags::empty(),
         )
     }
 
-    fn status_flags(&self) -> StatusFlags {
-        // TODO: Support other flags (e.g., `O_ASYNC`)
-        if self.is_nonblocking() {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        }
-    }
-
-    fn set_status_flags(&self, new_flags: StatusFlags) -> Result<()> {
-        // TODO: Support other flags (e.g., `O_ASYNC`)
-        if new_flags.contains(StatusFlags::O_NONBLOCK) {
-            self.set_nonblocking(true);
-        } else {
-            self.set_nonblocking(false);
-        }
-        Ok(())
+    fn settable_status_flags(&self) -> SettableStatusFlags {
+        SettableStatusFlags::minimal().with_o_async()
     }
 
     fn access_mode(&self) -> AccessMode {
@@ -191,8 +174,8 @@ impl<T: Socket + 'static> FileLike for T {
         Some(self)
     }
 
-    fn path(&self) -> &Path {
-        self.pseudo_path()
+    fn common(&self) -> &FileCommon {
+        Socket::common(self)
     }
 
     fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display> {
@@ -217,7 +200,7 @@ impl<T: Socket + 'static> FileLike for T {
 
         Box::new(FdInfo {
             flags,
-            ino: self.pseudo_path().inode().ino(),
+            ino: self.common().path().inode().ino(),
         })
     }
 }

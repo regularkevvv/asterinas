@@ -157,9 +157,10 @@ impl<M: AnyFrameMeta + ?Sized> Segment<M> {
     /// any of the ends of the byte offset range is not base-page aligned.
     pub fn slice(&self, range: &Range<usize>) -> Self {
         assert!(range.start.is_multiple_of(PAGE_SIZE) && range.end.is_multiple_of(PAGE_SIZE));
+        assert!(range.start <= range.end && range.end <= self.size());
+
         let start = self.range.start + range.start;
         let end = self.range.start + range.end;
-        assert!(start <= end && end <= self.range.end);
 
         for paddr in (start..end).step_by(PAGE_SIZE) {
             // SAFETY: We already have reference counts for the frames since

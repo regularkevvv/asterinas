@@ -383,6 +383,18 @@ mod segment {
     }
 
     #[ktest]
+    #[should_panic]
+    fn segment_slice_out_of_bounds() {
+        let total_frames = 3;
+        let segment = FrameAllocOptions::new()
+            .alloc_segment(total_frames)
+            .expect("Failed to allocate segment");
+        let huge_page_aligned_offset = usize::MAX - (PAGE_SIZE - 1);
+        // Huge out-of-bounds offsets should panic
+        segment.slice(&(huge_page_aligned_offset..huge_page_aligned_offset));
+    }
+
+    #[ktest]
     fn segment_to_usegment() {
         let options = FrameAllocOptions::new();
         let segment = options.alloc_segment(1).unwrap();
