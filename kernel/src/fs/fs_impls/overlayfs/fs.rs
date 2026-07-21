@@ -509,8 +509,19 @@ impl OverlayInode {
         if self.type_ != InodeType::Dir {
             return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
         }
+
+        let old = old
+            .downcast_ref::<OverlayInode>()
+            .ok_or_else(|| Error::with_message(Errno::EXDEV, "not same fs"))?;
+        if !Weak::ptr_eq(&self.fs, &old.fs) {
+            return_errno_with_message!(Errno::EXDEV, "not same fs");
+        }
+
+        // Link concrete upper-layer inodes. The synthetic OverlayInode belongs
+        // to a different filesystem and must never be passed to the upper FS.
+        let old_upper = old.build_upper_recursively_if_needed()?;
         let upper = self.build_upper_recursively_if_needed()?;
-        upper.link(old, name)
+        upper.link(&old_upper, name)
     }
 
     pub fn read_link(&self) -> Result<SymbolicLink> {
@@ -1529,6 +1540,24 @@ mod tests {
 
         assert_eq!(error.error(), Errno::EOPNOTSUPP);
         assert_eq!(root.lookup("f1").unwrap().type_(), InodeType::File);
+    }
+
+    #[ktest]
+    fn hard_link_uses_concrete_upper_inodes() {
+        let fs = create_overlay_fs();
+        let root = fs.root_inode();
+        let source = root
+            .create("hard-link-source", InodeType::File, InodeMode::all())
+            .unwrap();
+        source.write_bytes_at(0, b"payload").unwrap();
+
+        root.link(&source, "hard-link-target").unwrap();
+
+        let target = root.lookup("hard-link-target").unwrap();
+        assert_eq!(target.ino(), source.ino());
+        let mut payload = [0u8; 7];
+        target.read_bytes_at(0, &mut payload).unwrap();
+        assert_eq!(&payload, b"payload");
     }
 
     #[ktest]
