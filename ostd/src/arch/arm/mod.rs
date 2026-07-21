@@ -112,5 +112,38 @@ pub(crate) fn enable_cpu_features() {
             "msr cpacr_el1, {tmp}",
             tmp = out(reg) _,
         );
+
+        let mut cntkctl: u64;
+        asm!(
+            "mrs {cntkctl}, cntkctl_el1",
+            cntkctl = out(reg) cntkctl,
+            options(nomem, nostack, preserves_flags),
+        );
+        cntkctl = enable_el0_virtual_counter(cntkctl);
+        asm!(
+            "msr cntkctl_el1, {cntkctl}",
+            "isb",
+            cntkctl = in(reg) cntkctl,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
+fn enable_el0_virtual_counter(cntkctl: u64) -> u64 {
+    // CNTKCTL_EL1.EL0VCTEN, bit [1]: allow EL0 to read CNTVCT_EL0. The
+    // AArch64 vDSO reads the virtual counter directly in its supported mode.
+    cntkctl | (1 << 1)
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd_macros::ktest;
+
+    use super::enable_el0_virtual_counter;
+
+    #[ktest]
+    fn virtual_counter_enable_preserves_other_controls() {
+        let original = 0xa5a5_0000_0000_0001;
+        assert_eq!(enable_el0_virtual_counter(original), original | 2);
     }
 }
