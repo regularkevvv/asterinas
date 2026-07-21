@@ -23,7 +23,7 @@ bitflags! {
         const MSG_ZEROCOPY  = 0x4000000;
         const MSG_FASTOPEN  = 0x20000000;
 
-        const SUPPORTED     = 0x0;
+        const SUPPORTED     = SendFlags::MSG_DONTWAIT.bits;
     }
 }
 
@@ -50,7 +50,29 @@ bitflags! {
         const MSG_SOCK_DEVMEM  = 0x2000000;
         const MSG_CMSG_CLOEXEC = 0x40000000;
 
-        const SUPPORTED        = RecvFlags::MSG_PEEK.bits | RecvFlags::MSG_TRUNC.bits;
+        const SUPPORTED        = RecvFlags::MSG_PEEK.bits
+                               | RecvFlags::MSG_TRUNC.bits
+                               | RecvFlags::MSG_DONTWAIT.bits;
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn dontwait_is_supported_for_send_and_receive() {
+        assert!(SendFlags::MSG_DONTWAIT.is_all_supported());
+        assert!(RecvFlags::MSG_DONTWAIT.is_all_supported());
+    }
+
+    #[ktest]
+    fn dontwait_preserves_receive_behavior() {
+        let flags = RecvFlags::MSG_PEEK | RecvFlags::MSG_DONTWAIT;
+        assert!(flags.is_all_supported());
+        assert_eq!(flags.receive_behavior(), ReceiveBehavior::Peek);
     }
 }
 

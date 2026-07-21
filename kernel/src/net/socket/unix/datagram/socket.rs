@@ -314,10 +314,14 @@ impl Socket for UnixDatagramSocket {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let (output, control_messages, peer_addr) =
-            self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
+        let (output, control_messages, peer_addr) = self.block_on_with_dontwait(
+            IoEvents::IN,
+            self.timeouts.recv_timeout(),
+            flags.contains(RecvFlags::MSG_DONTWAIT),
+            || {
                 self.local_receiver.try_recv(writer, flags)
-            })?;
+            },
+        )?;
 
         let message_header = MessageHeader::new(Some(peer_addr.into()), control_messages);
 

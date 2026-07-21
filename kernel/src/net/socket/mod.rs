@@ -66,6 +66,29 @@ mod private {
                     })
             }
         }
+
+        /// Completes a socket I/O operation without waiting when the caller
+        /// supplied `MSG_DONTWAIT`, even if the file description itself is in
+        /// blocking mode.
+        #[track_caller]
+        fn block_on_with_dontwait<F, R>(
+            &self,
+            events: IoEvents,
+            timeout: Option<Duration>,
+            dontwait: bool,
+            try_op: F,
+        ) -> Result<R>
+        where
+            Self: Sized,
+            F: FnMut() -> Result<R>,
+        {
+            if dontwait {
+                let mut try_op = try_op;
+                try_op()
+            } else {
+                self.block_on(events, timeout, try_op)
+            }
+        }
     }
 }
 
