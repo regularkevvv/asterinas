@@ -68,8 +68,10 @@ fn init_impl() -> Result<(), InitError> {
     let intr_args = if let Some(intrs) = timer.property("interrupts")
         && let mut iter = intrs
             .value
-            .chunks_exact(size_of::<u32>())
-            .map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
+            .map(|chunk| u32::from_be_bytes(*chunk))
         // "Interrupt list for secure, non-secure, virtual and hypervisor timers, in that order."
         && let Ok(_secure) = iter.next_chunk::<3>()
         && let Ok(_non_secure) = iter.next_chunk::<3>()
