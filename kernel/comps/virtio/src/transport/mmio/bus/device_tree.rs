@@ -36,8 +36,10 @@ pub(super) fn probe_from_device_tree() {
                 .property("interrupts")
                 .unwrap()
                 .value
-                .chunks_exact(size_of::<u32>())
-                .map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap()))
+                .as_chunks::<{ size_of::<u32>() }>()
+                .0
+                .iter()
+                .map(|chunk| u32::from_be_bytes(*chunk))
                 .next_chunk()
                 .unwrap(),
         };

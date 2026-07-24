@@ -30,8 +30,10 @@ pub(super) fn init() {
     let intr_args = if let Some(prop) = node.property("interrupts")
         && let Ok(args) = prop
             .value
-            .chunks_exact(size_of::<u32>())
-            .map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
+            .map(|chunk| u32::from_be_bytes(*chunk))
             .next_chunk()
     {
         args
