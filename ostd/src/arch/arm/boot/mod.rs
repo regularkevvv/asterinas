@@ -168,7 +168,7 @@ mod tests {
     #[ktest]
     fn device_tree_boot_mapping_is_one_aligned_block() {
         assert_eq!(
-            containing_boot_block(0x27fe0_0000),
+            containing_boot_block(0x0002_7fe0_0000),
             0x2_4000_0000..0x2_8000_0000
         );
         assert_eq!(containing_boot_block(0x4000_0000), 0x4000_0000..0x8000_0000);
