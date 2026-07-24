@@ -939,8 +939,7 @@ impl OverlayInode {
                 .alloc_segment(chunk_len.align_up(BLOCK_SIZE) / BLOCK_SIZE)?;
 
             let mut writer = data_buf.writer().to_fallible();
-            let read_len =
-                lower.read_at(offset, &mut writer.limit(chunk_len), StatusFlags::empty())?;
+            let read_len = lower.read_at(offset, writer.limit(chunk_len), StatusFlags::empty())?;
             if read_len == 0 {
                 return_errno_with_message!(Errno::EIO, "short read while copying up file");
             }
