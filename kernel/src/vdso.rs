@@ -230,10 +230,10 @@ const PREBUILT_VDSO_LIB: &[u8] =
 const PREBUILT_VDSO_LIB: &[u8] =
     include_bytes!(concat!(env!("VDSO_LIBRARY_DIR"), "/vdso_aarch64.so"));
 
-/// The offset from the vDSO base to the `__vdso_rt_sigreturn` function.
+/// The offset from the vDSO base to the architecture's signal-restorer function.
 ///
-/// This constant is specific to the prebuilt vDSO library and can be obtained from
-/// `readelf -s vdso_riscv64.so | grep '__vdso_rt_sigreturn'`.
+/// These constants are specific to the prebuilt vDSO libraries. For AArch64,
+/// the bundled Linux vDSO exports `__kernel_rt_sigreturn` at this offset.
 #[cfg(target_arch = "riscv64")]
 pub const __VDSO_RT_SIGRETURN_OFFSET: usize = 0x5b0;
 #[cfg(target_arch = "aarch64")]
