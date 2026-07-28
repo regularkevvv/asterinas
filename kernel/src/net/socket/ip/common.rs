@@ -17,10 +17,18 @@ use crate::{
 fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
     match *ip_addr {
         IpAddress::Ipv4(ipv4_addr) => iter_all_ifaces()
-            .find(|iface| iface.ipv4_addr().is_some_and(|addr| addr == ipv4_addr))
+            .find(|iface| {
+                iface
+                    .ipv4_cidr()
+                    .is_some_and(|cidr| cidr.address() == ipv4_addr)
+            })
             .map(Clone::clone),
         IpAddress::Ipv6(ipv6_addr) => iter_all_ifaces()
-            .find(|iface| iface.ipv6_addr().is_some_and(|addr| addr == ipv6_addr))
+            .find(|iface| {
+                iface
+                    .ipv6_cidr()
+                    .is_some_and(|cidr| cidr.address() == ipv6_addr)
+            })
             .map(Clone::clone),
     }
 }
@@ -43,8 +51,8 @@ fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
         IpAddress::Ipv4(remote_ipv4_addr) => {
             if let Some(iface) = iter_all_ifaces().find(|iface| {
                 iface
-                    .ipv4_addr()
-                    .is_some_and(|addr| addr == *remote_ipv4_addr)
+                    .ipv4_cidr()
+                    .is_some_and(|cidr| cidr.address() == *remote_ipv4_addr)
             }) {
                 return iface.clone();
             }
@@ -60,8 +68,8 @@ fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
         IpAddress::Ipv6(remote_ipv6_addr) => {
             if let Some(iface) = iter_all_ifaces().find(|iface| {
                 iface
-                    .ipv6_addr()
-                    .is_some_and(|addr| addr == *remote_ipv6_addr)
+                    .ipv6_cidr()
+                    .is_some_and(|cidr| cidr.address() == *remote_ipv6_addr)
             }) {
                 return iface.clone();
             }
@@ -69,7 +77,7 @@ fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
             // Fall back to an interface with an IPv6 address.
             // Prefer virtio over loopback for external traffic.
             if let Some(virtio_iface) = virtio_iface()
-                && virtio_iface.ipv6_addr().is_some()
+                && virtio_iface.ipv6_cidr().is_some()
             {
                 return virtio_iface.clone();
             }
@@ -92,8 +100,12 @@ pub(super) fn resolve_bind_iface_and_config(
     let (iface, bind_endpoint) = if is_unspecified(&endpoint.addr) {
         let iface = get_ephemeral_iface(&endpoint.addr);
         let bind_addr = match endpoint.addr {
-            IpAddress::Ipv4(_) => iface.ipv4_addr().map(IpAddress::Ipv4),
-            IpAddress::Ipv6(_) => iface.ipv6_addr().map(IpAddress::Ipv6),
+            IpAddress::Ipv4(_) => iface
+                .ipv4_cidr()
+                .map(|cidr| IpAddress::Ipv4(cidr.address())),
+            IpAddress::Ipv6(_) => iface
+                .ipv6_cidr()
+                .map(|cidr| IpAddress::Ipv6(cidr.address())),
         }
         .ok_or_else(|| {
             Error::with_message(
@@ -134,12 +146,12 @@ pub(super) fn get_ephemeral_endpoint(remote_endpoint: &IpEndpoint) -> Option<IpE
     let iface = get_ephemeral_iface(&remote_endpoint.addr);
     match remote_endpoint.addr {
         IpAddress::Ipv4(_) => {
-            let ip_addr = iface.ipv4_addr()?;
-            Some(IpEndpoint::new(IpAddress::Ipv4(ip_addr), 0))
+            let ipv4_cidr = iface.ipv4_cidr()?;
+            Some(IpEndpoint::new(IpAddress::Ipv4(ipv4_cidr.address()), 0))
         }
         IpAddress::Ipv6(_) => {
-            let ipv6_addr = iface.ipv6_addr()?;
-            Some(IpEndpoint::new(IpAddress::Ipv6(ipv6_addr), 0))
+            let ipv6_cidr = iface.ipv6_cidr()?;
+            Some(IpEndpoint::new(IpAddress::Ipv6(ipv6_cidr.address()), 0))
         }
     }
 }
